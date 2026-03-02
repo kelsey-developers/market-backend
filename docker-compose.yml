@@ -1,0 +1,17 @@
+services:
+  db:
+    image: mysql:8.4
+    container_name: market_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: market
+      MYSQL_USER: market_user
+      MYSQL_PASSWORD: market_pass
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
