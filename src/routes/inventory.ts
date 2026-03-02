@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
@@ -39,7 +40,7 @@ inventoryRouter.get('/', async (_req, res, next) => {
       orderBy: { updatedAt: 'desc' },
     });
 
-    const inventory = balances.map((entry: { quantity: number; product: { reorderLevel: number; }; }) => ({
+    const inventory = balances.map((entry) => ({
       ...entry,
       isLowStock: entry.quantity <= entry.product.reorderLevel,
     }));
@@ -54,7 +55,7 @@ inventoryRouter.post('/movements', async (req, res, next) => {
   try {
     const payload = movementSchema.parse(req.body);
 
-    const result = await prisma.$transaction(async (tx: { inventoryBalance: { findUnique: (arg0: { where: { productId_warehouseId: { productId: string; warehouseId: string; }; }; }) => any; upsert: (arg0: { where: { productId_warehouseId: { productId: string; warehouseId: string; }; }; update: { quantity: any; }; create: { productId: string; warehouseId: string; quantity: any; }; }) => any; }; stockMovement: { create: (arg0: { data: { productId: string; warehouseId: string; type: "IN" | "OUT" | "ADJUSTMENT"; quantity: number; reason: string | undefined; referenceType: string | undefined; referenceId: string | undefined; notes: string | undefined; }; }) => any; }; }) => {
+    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const current = await tx.inventoryBalance.findUnique({
         where: {
           productId_warehouseId: {

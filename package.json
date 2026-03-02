@@ -7,12 +7,16 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
+    "db:status": "docker compose ps",
+    "db:logs": "docker compose logs -f db",
+    "db:init": "npm run db:up && npm run prisma:generate && npm run prisma:migrate -- --name init && npm run seed",
     "seed": "tsx prisma/seed.ts"
   },
   "repository": {

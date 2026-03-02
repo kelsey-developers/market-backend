@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
@@ -86,7 +87,7 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
     const payload = receivePurchaseOrderSchema.parse(req.body);
     const purchaseOrderId = req.params.id;
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id: purchaseOrderId },
         include: { items: true },
@@ -97,7 +98,7 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
       }
 
       for (const item of payload.items) {
-        const poItem = purchaseOrder.items.find((entry: { productId: string; }) => entry.productId === item.productId);
+        const poItem = purchaseOrder.items.find((entry) => entry.productId === item.productId);
         if (!poItem) {
           throw new Error(`Product ${item.productId} not found in purchase order`);
         }
@@ -161,7 +162,7 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
       });
 
       const fullyReceived =
-        refreshedPo?.items.every((item: { quantityReceived: number; quantityOrdered: number; }) => item.quantityReceived >= item.quantityOrdered) ?? false;
+        refreshedPo?.items.every((item) => item.quantityReceived >= item.quantityOrdered) ?? false;
 
       const status = fullyReceived
         ? 'RECEIVED'
