@@ -61,7 +61,14 @@ Health checks:
 - If you previously migrated with PostgreSQL, delete `prisma/migrations/*` and rerun `npm run prisma:migrate -- --name init`.
 - Replace `DATABASE_URL` in `.env` when moving to managed MySQL.
 
-## 6) Helpful Scripts
+## 6) Domain Coverage
+
+Current Prisma models now cover:
+
+- Inventory + supply: `Product`, `Supplier`, `Warehouse`, `InventoryBalance`, `StockMovement`, `PurchaseOrder`, `PurchaseOrderItem`, `InventoryAllocation`
+- Finance + sales report: `Property`, `Unit`, `Agent`, `Booking`, `BookingCharge`, `Payment`, `DamageIncident`
+
+## 7) Helpful Scripts
 
 - `npm run db:status` to check MySQL container status
 - `npm run db:logs` to tail MySQL logs

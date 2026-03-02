@@ -21,6 +21,50 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+enum PropertyType {
+  apartment
+  condominium
+  penthouse
+  house
+  villa
+  studio
+}
+
+enum BookingChannel {
+  Airbnb
+  direct
+  corporate
+}
+
+enum BookingStatus {
+  pending
+  confirmed
+  checked_in
+  checked_out
+  cancelled
+}
+
+enum ChargeCategory {
+  base
+  addon
+  penalty
+  discount
+}
+
+enum PaymentStatus {
+  unpaid
+  partial
+  paid
+  refunded
+}
+
+enum DamagePenaltyStatus {
+  open
+  charged_to_guest
+  absorbed
+  settled
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -69,6 +113,7 @@ model Product {
   balances        InventoryBalance[]
   movements       StockMovement[]
   purchaseItems   PurchaseOrderItem[]
+  allocations     InventoryAllocation[]
 }
 
 model InventoryBalance {
@@ -127,4 +172,132 @@ model PurchaseOrderItem {
   product          Product        @relation(fields: [productId], references: [id])
 
   @@unique([purchaseOrderId, productId])
+}
+
+model Property {
+  id          String       @id @default(cuid())
+  name        String
+  type        PropertyType
+  location    String?
+  address     String?
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  units       Unit[]
+}
+
+model Unit {
+  id            String                @id @default(cuid())
+  propertyId    String
+  code          String
+  name          String
+  floorLabel    String?
+  capacity      Int                   @default(1)
+  nightlyRate   Decimal?              @db.Decimal(12, 2)
+  isActive      Boolean               @default(true)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  property      Property              @relation(fields: [propertyId], references: [id])
+  bookings      Booking[]
+  allocations   InventoryAllocation[]
+  incidents     DamageIncident[]
+
+  @@unique([propertyId, code])
+}
+
+model Agent {
+  id          String      @id @default(cuid())
+  name        String
+  email       String?     @unique
+  phone       String?
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  bookings    Booking[]
+}
+
+model Booking {
+  id            String          @id @default(cuid())
+  bookingCode   String          @unique
+  unitId        String
+  agentId       String?
+  channel       BookingChannel
+  status        BookingStatus   @default(pending)
+  guestName     String?
+  guestCount    Int             @default(1)
+  checkIn       DateTime
+  checkOut      DateTime
+  basePrice     Decimal         @db.Decimal(12, 2)
+  discount      Decimal         @default(0) @db.Decimal(12, 2)
+  totalAmount   Decimal         @db.Decimal(12, 2)
+  notes         String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  unit          Unit            @relation(fields: [unitId], references: [id])
+  agent         Agent?          @relation(fields: [agentId], references: [id])
+  charges       BookingCharge[]
+  payment       Payment?
+  incidents     DamageIncident[]
+}
+
+model BookingCharge {
+  id           String         @id @default(cuid())
+  bookingId    String
+  category     ChargeCategory
+  name         String
+  amount       Decimal        @db.Decimal(12, 2)
+  quantity     Int            @default(1)
+  notes        String?
+  createdAt    DateTime       @default(now())
+
+  booking      Booking        @relation(fields: [bookingId], references: [id])
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  bookingId      String        @unique
+  subTotal       Decimal       @db.Decimal(12, 2)
+  discountTotal  Decimal       @default(0) @db.Decimal(12, 2)
+  totalPaid      Decimal       @default(0) @db.Decimal(12, 2)
+  status         PaymentStatus @default(unpaid)
+  method         String?
+  referenceNo    String?
+  paidAt         DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  booking        Booking       @relation(fields: [bookingId], references: [id])
+}
+
+model DamageIncident {
+  id              String               @id @default(cuid())
+  bookingId       String?
+  unitId          String
+  reportedAt      DateTime             @default(now())
+  description     String
+  cost            Decimal              @db.Decimal(12, 2)
+  chargedToGuest  Decimal              @default(0) @db.Decimal(12, 2)
+  absorbedAmount  Decimal              @default(0) @db.Decimal(12, 2)
+  status          DamagePenaltyStatus  @default(open)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  booking         Booking?             @relation(fields: [bookingId], references: [id])
+  unit            Unit                 @relation(fields: [unitId], references: [id])
+}
+
+model InventoryAllocation {
+  id          String    @id @default(cuid())
+  productId   String
+  unitId      String
+  quantity    Int       @default(0)
+  minStock    Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  product     Product   @relation(fields: [productId], references: [id])
+  unit        Unit      @relation(fields: [unitId], references: [id])
+
+  @@unique([productId, unitId])
 }
