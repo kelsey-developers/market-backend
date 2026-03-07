@@ -21,6 +21,48 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+enum ProductItemType {
+  consumable
+  non_consumable
+}
+
+enum UserRole {
+  admin
+  frontdesk
+  finance
+  inventory
+  operations
+  agent
+}
+
+enum PaymentTransactionType {
+  payment
+  refund
+  adjustment
+}
+
+enum PaymentMethod {
+  cash
+  gcash
+  bank_transfer
+  card
+  other
+}
+
+enum StockMovementReferenceType {
+  purchase_order
+  goods_receipt
+  booking
+  damage_incident
+  manual_adjustment
+}
+
+enum AccessRole {
+  viewer
+  editor
+  manager
+}
+
 enum PropertyType {
   apartment
   condominium
@@ -66,12 +108,18 @@ enum DamagePenaltyStatus {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String
-  role      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                           String               @id @default(cuid())
+  email                        String               @unique
+  name                         String
+  role                         UserRole
+  createdAt                    DateTime             @default(now())
+  updatedAt                    DateTime             @updatedAt
+  reportedDamageIncidents      DamageIncident[]     @relation("DamageIncidentReporter")
+  resolvedDamageIncidents      DamageIncident[]     @relation("DamageIncidentResolver")
+  uploadedDamageAttachments    DamageAttachment[]   @relation("DamageAttachmentUploader")
+  recordedPaymentTransactions  PaymentTransaction[] @relation("PaymentTransactionRecorder")
+  receivedGoodsReceipts        GoodsReceipt[]       @relation("GoodsReceiptReceiver")
+  propertyAccesses             UserPropertyAccess[]
 }
 
 model Supplier {
@@ -88,14 +136,26 @@ model Supplier {
 }
 
 model Warehouse {
-  id         String             @id @default(cuid())
-  name       String
-  code       String             @unique
-  location   String?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
-  balances   InventoryBalance[]
-  movements  StockMovement[]
+  id            String             @id @default(cuid())
+  name          String
+  code          String             @unique
+  location      String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  balances      InventoryBalance[]
+  movements     StockMovement[]
+  goodsReceipts GoodsReceipt[]
+}
+
+model InventoryCategory {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
 }
 
 model Product {
@@ -104,15 +164,19 @@ model Product {
   name            String
   description     String?
   unit            String
+  itemType        ProductItemType    @default(consumable)
   reorderLevel    Int                @default(0)
   isActive        Boolean            @default(true)
   supplierId      String?
+  categoryId      String?
   supplier        Supplier?          @relation(fields: [supplierId], references: [id])
+  category        InventoryCategory? @relation(fields: [categoryId], references: [id])
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   balances        InventoryBalance[]
   movements       StockMovement[]
   purchaseItems   PurchaseOrderItem[]
+  goodsReceiptItems GoodsReceiptItem[]
   allocations     InventoryAllocation[]
 }
 
@@ -130,19 +194,29 @@ model InventoryBalance {
 }
 
 model StockMovement {
-  id              String            @id @default(cuid())
-  productId       String
-  warehouseId     String
-  type            StockMovementType
-  quantity        Int
-  reason          String?
-  referenceType   String?
-  referenceId     String?
-  notes           String?
-  createdAt       DateTime          @default(now())
+  id               String                     @id @default(cuid())
+  productId        String
+  warehouseId      String
+  type             StockMovementType
+  quantity         Int
+  reason           String?
+  referenceType    StockMovementReferenceType?
+  referenceId      String?
+  purchaseOrderId  String?
+  goodsReceiptId   String?
+  bookingId        String?
+  damageIncidentId String?
+  notes            String?
+  createdAt        DateTime                   @default(now())
 
-  product         Product           @relation(fields: [productId], references: [id])
-  warehouse       Warehouse         @relation(fields: [warehouseId], references: [id])
+  product          Product                    @relation(fields: [productId], references: [id])
+  warehouse        Warehouse                  @relation(fields: [warehouseId], references: [id])
+  purchaseOrder    PurchaseOrder?             @relation(fields: [purchaseOrderId], references: [id])
+  goodsReceipt     GoodsReceipt?              @relation(fields: [goodsReceiptId], references: [id])
+  booking          Booking?                   @relation(fields: [bookingId], references: [id])
+  damageIncident   DamageIncident?            @relation(fields: [damageIncidentId], references: [id])
+
+  @@index([referenceType, createdAt])
 }
 
 model PurchaseOrder {
@@ -158,6 +232,8 @@ model PurchaseOrder {
 
   supplier       Supplier             @relation(fields: [supplierId], references: [id])
   items          PurchaseOrderItem[]
+  receipts       GoodsReceipt[]
+  movements      StockMovement[]
 }
 
 model PurchaseOrderItem {
@@ -170,6 +246,7 @@ model PurchaseOrderItem {
 
   purchaseOrder    PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id])
   product          Product        @relation(fields: [productId], references: [id])
+  receiptItems     GoodsReceiptItem[]
 
   @@unique([purchaseOrderId, productId])
 }
@@ -184,6 +261,7 @@ model Property {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   units       Unit[]
+  userAccesses UserPropertyAccess[]
 }
 
 model Unit {
@@ -202,6 +280,7 @@ model Unit {
   bookings      Booking[]
   allocations   InventoryAllocation[]
   incidents     DamageIncident[]
+  dateBlocks    UnitDateBlock[]
 
   @@unique([propertyId, code])
 }
@@ -240,6 +319,9 @@ model Booking {
   charges       BookingCharge[]
   payment       Payment?
   incidents     DamageIncident[]
+  guests        BookingGuest[]
+  dateBlocks    UnitDateBlock[]
+  stockMovements StockMovement[]
 }
 
 model BookingCharge {
@@ -262,21 +344,88 @@ model Payment {
   discountTotal  Decimal       @default(0) @db.Decimal(12, 2)
   totalPaid      Decimal       @default(0) @db.Decimal(12, 2)
   status         PaymentStatus @default(unpaid)
-  method         String?
+  method         PaymentMethod?
   referenceNo    String?
   paidAt         DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
   booking        Booking       @relation(fields: [bookingId], references: [id])
+  transactions   PaymentTransaction[]
+}
+
+model PaymentTransaction {
+  id               String                 @id @default(cuid())
+  paymentId        String
+  type             PaymentTransactionType
+  amount           Decimal                @db.Decimal(12, 2)
+  method           PaymentMethod?
+  referenceNo      String?
+  paidAt           DateTime               @default(now())
+  notes            String?
+  recordedByUserId String?
+  createdAt        DateTime               @default(now())
+
+  payment          Payment                @relation(fields: [paymentId], references: [id])
+  recordedByUser   User?                  @relation("PaymentTransactionRecorder", fields: [recordedByUserId], references: [id])
+
+  @@index([paymentId, paidAt])
+}
+
+model Guest {
+  id         String        @id @default(cuid())
+  firstName  String
+  lastName   String?
+  email      String?
+  phone      String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  bookings   BookingGuest[]
+
+  @@index([email])
+  @@index([phone])
+}
+
+model BookingGuest {
+  id         String    @id @default(cuid())
+  bookingId  String
+  guestId    String
+  isPrimary  Boolean   @default(false)
+  isBooker   Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+
+  booking    Booking   @relation(fields: [bookingId], references: [id])
+  guest      Guest     @relation(fields: [guestId], references: [id])
+
+  @@unique([bookingId, guestId])
+  @@index([guestId])
+}
+
+model UnitDateBlock {
+  id         String    @id @default(cuid())
+  unitId     String
+  bookingId  String
+  date       DateTime  @db.Date
+  createdAt  DateTime  @default(now())
+
+  unit       Unit      @relation(fields: [unitId], references: [id])
+  booking    Booking   @relation(fields: [bookingId], references: [id])
+
+  @@unique([unitId, date])
+  @@index([bookingId])
 }
 
 model DamageIncident {
   id              String               @id @default(cuid())
   bookingId       String?
   unitId          String
+  reportedByUserId String?
+  resolvedByUserId String?
   reportedAt      DateTime             @default(now())
+  resolvedAt      DateTime?
   description     String
+  resolutionNotes String?
   cost            Decimal              @db.Decimal(12, 2)
   chargedToGuest  Decimal              @default(0) @db.Decimal(12, 2)
   absorbedAmount  Decimal              @default(0) @db.Decimal(12, 2)
@@ -286,6 +435,73 @@ model DamageIncident {
 
   booking         Booking?             @relation(fields: [bookingId], references: [id])
   unit            Unit                 @relation(fields: [unitId], references: [id])
+  reportedByUser  User?                @relation("DamageIncidentReporter", fields: [reportedByUserId], references: [id])
+  resolvedByUser  User?                @relation("DamageIncidentResolver", fields: [resolvedByUserId], references: [id])
+  attachments     DamageAttachment[]
+  stockMovements  StockMovement[]
+}
+
+model DamageAttachment {
+  id               String         @id @default(cuid())
+  damageIncidentId String
+  fileUrl          String
+  fileName         String?
+  mimeType         String?
+  uploadedByUserId String?
+  createdAt        DateTime       @default(now())
+
+  damageIncident   DamageIncident @relation(fields: [damageIncidentId], references: [id])
+  uploadedByUser   User?          @relation("DamageAttachmentUploader", fields: [uploadedByUserId], references: [id])
+
+  @@index([damageIncidentId])
+}
+
+model GoodsReceipt {
+  id               String            @id @default(cuid())
+  receiptNo        String            @unique
+  purchaseOrderId  String
+  warehouseId      String
+  receivedByUserId String?
+  receivedAt       DateTime          @default(now())
+  notes            String?
+  createdAt        DateTime          @default(now())
+
+  purchaseOrder    PurchaseOrder     @relation(fields: [purchaseOrderId], references: [id])
+  warehouse        Warehouse         @relation(fields: [warehouseId], references: [id])
+  receivedByUser   User?             @relation("GoodsReceiptReceiver", fields: [receivedByUserId], references: [id])
+  items            GoodsReceiptItem[]
+  stockMovements   StockMovement[]
+
+  @@index([purchaseOrderId, receivedAt])
+}
+
+model GoodsReceiptItem {
+  id                  String            @id @default(cuid())
+  goodsReceiptId      String
+  purchaseOrderItemId String
+  productId           String
+  quantityReceived    Int
+  unitCost            Decimal?          @db.Decimal(12, 2)
+
+  goodsReceipt        GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id])
+  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id])
+  product             Product           @relation(fields: [productId], references: [id])
+
+  @@unique([goodsReceiptId, purchaseOrderItemId])
+  @@index([productId])
+}
+
+model UserPropertyAccess {
+  id          String     @id @default(cuid())
+  userId      String
+  propertyId  String
+  role        AccessRole @default(viewer)
+  createdAt   DateTime   @default(now())
+
+  user        User       @relation(fields: [userId], references: [id])
+  property    Property   @relation(fields: [propertyId], references: [id])
+
+  @@unique([userId, propertyId])
 }
 
 model InventoryAllocation {

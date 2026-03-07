@@ -44,6 +44,9 @@ Health checks:
 ## 4) Endpoints
 
 - `GET /health`
+- `GET /api/product-categories`
+- `POST /api/product-categories`
+- `PATCH /api/product-categories/:id`
 - `GET /api/products`
 - `POST /api/products`
 - `PATCH /api/products/:id`
@@ -65,7 +68,7 @@ Health checks:
 
 Current Prisma models now cover:
 
-- Inventory + supply: `Product`, `Supplier`, `Warehouse`, `InventoryBalance`, `StockMovement`, `PurchaseOrder`, `PurchaseOrderItem`, `InventoryAllocation`
+- Inventory + supply: `InventoryCategory`, `Product` (with `itemType` for consumable/non-consumable), `Supplier`, `Warehouse`, `InventoryBalance`, `StockMovement`, `PurchaseOrder`, `PurchaseOrderItem`, `InventoryAllocation`
 - Finance + sales report: `Property`, `Unit`, `Agent`, `Booking`, `BookingCharge`, `Payment`, `DamageIncident`
 
 ## 7) Helpful Scripts

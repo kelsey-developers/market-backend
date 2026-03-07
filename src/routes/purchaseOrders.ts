@@ -21,6 +21,8 @@ const createPurchaseOrderSchema = z.object({
 
 const receivePurchaseOrderSchema = z.object({
   warehouseId: z.string().min(1),
+  receivedByUserId: z.string().optional(),
+  notes: z.string().optional(),
   items: z
     .array(
       z.object({
@@ -97,6 +99,16 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
         throw new Error('Purchase order not found');
       }
 
+      const goodsReceipt = await tx.goodsReceipt.create({
+        data: {
+          receiptNo: `GR-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          purchaseOrderId,
+          warehouseId: payload.warehouseId,
+          receivedByUserId: payload.receivedByUserId,
+          notes: payload.notes,
+        },
+      });
+
       for (const item of payload.items) {
         const poItem = purchaseOrder.items.find((entry) => entry.productId === item.productId);
         if (!poItem) {
@@ -114,6 +126,16 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
             quantityReceived: {
               increment: item.quantityReceived,
             },
+          },
+        });
+
+        await tx.goodsReceiptItem.create({
+          data: {
+            goodsReceiptId: goodsReceipt.id,
+            purchaseOrderItemId: poItem.id,
+            productId: item.productId,
+            quantityReceived: item.quantityReceived,
+            unitCost: poItem.unitCost,
           },
         });
 
@@ -149,8 +171,10 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
             warehouseId: payload.warehouseId,
             type: 'IN',
             quantity: item.quantityReceived,
-            referenceType: 'purchase_order',
-            referenceId: purchaseOrderId,
+            referenceType: 'goods_receipt',
+            referenceId: goodsReceipt.id,
+            purchaseOrderId,
+            goodsReceiptId: goodsReceipt.id,
             reason: 'Purchase order receiving',
           },
         });
@@ -168,7 +192,7 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
         ? 'RECEIVED'
         : 'PARTIALLY_RECEIVED';
 
-      return tx.purchaseOrder.update({
+      const updatedPurchaseOrder = await tx.purchaseOrder.update({
         where: { id: purchaseOrderId },
         data: {
           status,
@@ -179,6 +203,25 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
           supplier: true,
         },
       });
+
+      const createdReceipt = await tx.goodsReceipt.findUnique({
+        where: { id: goodsReceipt.id },
+        include: {
+          warehouse: true,
+          receivedByUser: true,
+          items: {
+            include: {
+              product: true,
+              purchaseOrderItem: true,
+            },
+          },
+        },
+      });
+
+      return {
+        purchaseOrder: updatedPurchaseOrder,
+        goodsReceipt: createdReceipt,
+      };
     });
 
     res.json(result);

@@ -26,21 +26,64 @@ async function main() {
       },
     }));
 
+  const [pantryCategory] = await Promise.all([
+    prisma.inventoryCategory.upsert({
+      where: { code: 'PANTRY_SUPPLIES' },
+      update: {
+        name: 'Pantry Supplies',
+        description: 'Consumables such as food packs and pantry staples.',
+      },
+      create: {
+        code: 'PANTRY_SUPPLIES',
+        name: 'Pantry Supplies',
+        description: 'Consumables such as food packs and pantry staples.',
+      },
+    }),
+    prisma.inventoryCategory.upsert({
+      where: { code: 'CLEANING_SUPPLIES' },
+      update: {
+        name: 'Cleaning Supplies',
+        description: 'Consumables for housekeeping and sanitation.',
+      },
+      create: {
+        code: 'CLEANING_SUPPLIES',
+        name: 'Cleaning Supplies',
+        description: 'Consumables for housekeeping and sanitation.',
+      },
+    }),
+    prisma.inventoryCategory.upsert({
+      where: { code: 'FURNITURE' },
+      update: {
+        name: 'Furniture',
+        description: 'Non-consumable furniture and durable fixtures.',
+      },
+      create: {
+        code: 'FURNITURE',
+        name: 'Furniture',
+        description: 'Non-consumable furniture and durable fixtures.',
+      },
+    }),
+  ]);
+
   const products = await Promise.all([
     prisma.product.upsert({
       where: { sku: 'SKU-RICE-5KG' },
       update: {
         name: 'Rice 5kg',
         unit: 'bag',
+        itemType: 'consumable',
         reorderLevel: 20,
         supplierId: supplier.id,
+        categoryId: pantryCategory.id,
       },
       create: {
         sku: 'SKU-RICE-5KG',
         name: 'Rice 5kg',
         unit: 'bag',
+        itemType: 'consumable',
         reorderLevel: 20,
         supplierId: supplier.id,
+        categoryId: pantryCategory.id,
       },
     }),
     prisma.product.upsert({
@@ -48,15 +91,19 @@ async function main() {
       update: {
         name: 'Instant Noodles Box',
         unit: 'box',
+        itemType: 'consumable',
         reorderLevel: 15,
         supplierId: supplier.id,
+        categoryId: pantryCategory.id,
       },
       create: {
         sku: 'SKU-NOODLES-BOX',
         name: 'Instant Noodles Box',
         unit: 'box',
+        itemType: 'consumable',
         reorderLevel: 15,
         supplierId: supplier.id,
+        categoryId: pantryCategory.id,
       },
     }),
   ]);
@@ -153,6 +200,36 @@ async function main() {
     },
   });
 
+  const reporterUser = await prisma.user.upsert({
+    where: { email: 'frontdesk@example.com' },
+    update: {
+      name: 'Front Desk Staff',
+      role: 'frontdesk',
+    },
+    create: {
+      email: 'frontdesk@example.com',
+      name: 'Front Desk Staff',
+      role: 'frontdesk',
+    },
+  });
+
+  await prisma.userPropertyAccess.upsert({
+    where: {
+      userId_propertyId: {
+        userId: reporterUser.id,
+        propertyId: property.id,
+      },
+    },
+    update: {
+      role: 'editor',
+    },
+    create: {
+      userId: reporterUser.id,
+      propertyId: property.id,
+      role: 'editor',
+    },
+  });
+
   const booking = await prisma.booking.upsert({
     where: { bookingCode: 'BK-1024' },
     update: {
@@ -184,6 +261,48 @@ async function main() {
     },
   });
 
+  const primaryGuest = await prisma.guest.upsert({
+    where: { id: 'seed-guest-1' },
+    update: {
+      firstName: 'John',
+      lastName: 'Doe',
+      email: 'john.doe@example.com',
+      phone: '09175551234',
+    },
+    create: {
+      id: 'seed-guest-1',
+      firstName: 'John',
+      lastName: 'Doe',
+      email: 'john.doe@example.com',
+      phone: '09175551234',
+    },
+  });
+
+  await prisma.bookingGuest.deleteMany({ where: { bookingId: booking.id } });
+  await prisma.bookingGuest.create({
+    data: {
+      bookingId: booking.id,
+      guestId: primaryGuest.id,
+      isPrimary: true,
+      isBooker: true,
+    },
+  });
+
+  await prisma.unitDateBlock.deleteMany({ where: { bookingId: booking.id } });
+  const bookingDates: Array<{ unitId: string; bookingId: string; date: Date }> = [];
+  const checkInDate = new Date('2025-02-01T00:00:00.000Z');
+  const checkOutDate = new Date('2025-02-05T00:00:00.000Z');
+  for (const cursor = new Date(checkInDate); cursor < checkOutDate; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    bookingDates.push({
+      unitId: units[0].id,
+      bookingId: booking.id,
+      date: new Date(cursor),
+    });
+  }
+  if (bookingDates.length > 0) {
+    await prisma.unitDateBlock.createMany({ data: bookingDates });
+  }
+
   await prisma.bookingCharge.deleteMany({ where: { bookingId: booking.id } });
   await prisma.bookingCharge.createMany({
     data: [
@@ -204,7 +323,7 @@ async function main() {
     ],
   });
 
-  await prisma.payment.upsert({
+  const payment = await prisma.payment.upsert({
     where: { bookingId: booking.id },
     update: {
       subTotal: 13800,
@@ -227,12 +346,41 @@ async function main() {
     },
   });
 
-  await prisma.damageIncident.upsert({
+  await prisma.paymentTransaction.upsert({
+    where: { id: 'seed-payment-tx-1' },
+    update: {
+      paymentId: payment.id,
+      type: 'payment',
+      amount: 13800,
+      method: 'gcash',
+      referenceNo: 'PAY-1024',
+      paidAt: new Date('2025-02-05T12:30:00.000Z'),
+      recordedByUserId: reporterUser.id,
+      notes: 'Full settlement on checkout.',
+    },
+    create: {
+      id: 'seed-payment-tx-1',
+      paymentId: payment.id,
+      type: 'payment',
+      amount: 13800,
+      method: 'gcash',
+      referenceNo: 'PAY-1024',
+      paidAt: new Date('2025-02-05T12:30:00.000Z'),
+      recordedByUserId: reporterUser.id,
+      notes: 'Full settlement on checkout.',
+    },
+  });
+
+  const damageIncident = await prisma.damageIncident.upsert({
     where: { id: 'seed-damage-1' },
     update: {
       bookingId: booking.id,
       unitId: units[0].id,
+      reportedByUserId: reporterUser.id,
+      resolvedByUserId: reporterUser.id,
+      resolvedAt: new Date('2025-02-05T12:35:00.000Z'),
       description: 'Broken lamp shade',
+      resolutionNotes: 'Guest admitted damage; charge applied and case closed.',
       cost: 1000,
       chargedToGuest: 700,
       absorbedAmount: 300,
@@ -242,11 +390,34 @@ async function main() {
       id: 'seed-damage-1',
       bookingId: booking.id,
       unitId: units[0].id,
+      reportedByUserId: reporterUser.id,
+      resolvedByUserId: reporterUser.id,
+      resolvedAt: new Date('2025-02-05T12:35:00.000Z'),
       description: 'Broken lamp shade',
+      resolutionNotes: 'Guest admitted damage; charge applied and case closed.',
       cost: 1000,
       chargedToGuest: 700,
       absorbedAmount: 300,
       status: 'settled',
+    },
+  });
+
+  await prisma.damageAttachment.upsert({
+    where: { id: 'seed-damage-attachment-1' },
+    update: {
+      damageIncidentId: damageIncident.id,
+      fileUrl: 'https://example.com/damage/seed-damage-1-photo.jpg',
+      fileName: 'broken-lamp-shade.jpg',
+      mimeType: 'image/jpeg',
+      uploadedByUserId: reporterUser.id,
+    },
+    create: {
+      id: 'seed-damage-attachment-1',
+      damageIncidentId: damageIncident.id,
+      fileUrl: 'https://example.com/damage/seed-damage-1-photo.jpg',
+      fileName: 'broken-lamp-shade.jpg',
+      mimeType: 'image/jpeg',
+      uploadedByUserId: reporterUser.id,
     },
   });
 

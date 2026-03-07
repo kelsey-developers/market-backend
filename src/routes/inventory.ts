@@ -11,9 +11,61 @@ const movementSchema = z.object({
   type: z.enum(['IN', 'OUT', 'ADJUSTMENT']),
   quantity: z.number().int().positive(),
   reason: z.string().optional(),
-  referenceType: z.string().optional(),
+  referenceType: z
+    .enum(['purchase_order', 'goods_receipt', 'booking', 'damage_incident', 'manual_adjustment'])
+    .optional(),
   referenceId: z.string().optional(),
+  purchaseOrderId: z.string().optional(),
+  goodsReceiptId: z.string().optional(),
+  bookingId: z.string().optional(),
+  damageIncidentId: z.string().optional(),
   notes: z.string().optional(),
+}).superRefine((payload, ctx) => {
+  if (payload.referenceType === 'purchase_order' && !payload.purchaseOrderId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'purchaseOrderId is required when referenceType is purchase_order',
+      path: ['purchaseOrderId'],
+    });
+  }
+
+  if (payload.referenceType === 'goods_receipt' && !payload.goodsReceiptId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'goodsReceiptId is required when referenceType is goods_receipt',
+      path: ['goodsReceiptId'],
+    });
+  }
+
+  if (payload.referenceType === 'booking' && !payload.bookingId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'bookingId is required when referenceType is booking',
+      path: ['bookingId'],
+    });
+  }
+
+  if (payload.referenceType === 'damage_incident' && !payload.damageIncidentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'damageIncidentId is required when referenceType is damage_incident',
+      path: ['damageIncidentId'],
+    });
+  }
+
+  const hasTypedReferenceId =
+    !!payload.purchaseOrderId ||
+    !!payload.goodsReceiptId ||
+    !!payload.bookingId ||
+    !!payload.damageIncidentId;
+
+  if (!payload.referenceType && hasTypedReferenceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'referenceType is required when relation reference IDs are supplied',
+      path: ['referenceType'],
+    });
+  }
 });
 
 inventoryRouter.get('/', async (_req, res, next) => {
@@ -104,6 +156,10 @@ inventoryRouter.post('/movements', async (req, res, next) => {
           reason: payload.reason,
           referenceType: payload.referenceType,
           referenceId: payload.referenceId,
+          purchaseOrderId: payload.purchaseOrderId,
+          goodsReceiptId: payload.goodsReceiptId,
+          bookingId: payload.bookingId,
+          damageIncidentId: payload.damageIncidentId,
           notes: payload.notes,
         },
       });

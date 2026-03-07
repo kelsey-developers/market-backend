@@ -6,6 +6,7 @@ import { ZodError } from 'zod';
 import { env } from './config/env';
 import { healthRouter } from './routes/health';
 import { inventoryRouter } from './routes/inventory';
+import { productCategoriesRouter } from './routes/productCategories';
 import { productsRouter } from './routes/products';
 import { purchaseOrdersRouter } from './routes/purchaseOrders';
 import { suppliersRouter } from './routes/suppliers';
@@ -26,12 +27,13 @@ app.get('/', (_req, res) => {
 });
 
 app.use('/health', healthRouter);
+app.use('/api/product-categories', productCategoriesRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/inventory', inventoryRouter);
 app.use('/api/purchase-orders', purchaseOrdersRouter);
 
-app.use('/api/*', (_req, res) => {
+app.use('/api', (_req, res) => {
   res.status(404).json({ message: 'API route not found' });
 });
 
