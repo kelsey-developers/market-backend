@@ -12,6 +12,14 @@ const createSupplierSchema = z.object({
   address: z.string().optional(),
 });
 
+const updateSupplierSchema = z.object({
+  name: z.string().min(1).optional(),
+  contactName: z.string().optional(),
+  contactEmail: z.string().email().optional(),
+  contactPhone: z.string().optional(),
+  address: z.string().optional(),
+});
+
 suppliersRouter.get('/', async (_req, res, next) => {
   try {
     const suppliers = await prisma.supplier.findMany({
@@ -28,6 +36,19 @@ suppliersRouter.post('/', async (req, res, next) => {
     const payload = createSupplierSchema.parse(req.body);
     const supplier = await prisma.supplier.create({ data: payload });
     res.status(201).json(supplier);
+  } catch (error) {
+    next(error);
+  }
+});
+
+suppliersRouter.patch('/:id', async (req, res, next) => {
+  try {
+    const payload = updateSupplierSchema.parse(req.body);
+    const supplier = await prisma.supplier.update({
+      where: { id: req.params.id },
+      data: payload,
+    });
+    res.json(supplier);
   } catch (error) {
     next(error);
   }

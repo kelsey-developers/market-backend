@@ -33,6 +33,13 @@ const receivePurchaseOrderSchema = z.object({
     .min(1),
 });
 
+const updatePurchaseOrderSchema = z.object({
+  supplierId: z.string().min(1).optional(),
+  status: z.enum(['DRAFT', 'ORDERED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']).optional(),
+  expectedDelivery: z.string().optional(),
+  notes: z.string().optional(),
+});
+
 purchaseOrdersRouter.get('/', async (_req, res, next) => {
   try {
     const purchaseOrders = await prisma.purchaseOrder.findMany({
@@ -225,6 +232,52 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
     });
 
     res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+purchaseOrdersRouter.patch('/:id', async (req, res, next) => {
+  try {
+    const payload = updatePurchaseOrderSchema.parse(req.body);
+
+    const current = await prisma.purchaseOrder.findUnique({
+      where: { id: req.params.id },
+      select: {
+        notes: true,
+      },
+    });
+
+    if (!current) {
+      throw new Error('Purchase order not found');
+    }
+
+    const notesFragments: string[] = [];
+    if (payload.notes) notesFragments.push(payload.notes);
+    if (payload.expectedDelivery) {
+      notesFragments.push(`Expected: ${payload.expectedDelivery}`);
+    }
+
+    const updated = await prisma.purchaseOrder.update({
+      where: { id: req.params.id },
+      data: {
+        ...(payload.supplierId ? { supplierId: payload.supplierId } : {}),
+        ...(payload.status ? { status: payload.status } : {}),
+        ...(notesFragments.length > 0
+          ? { notes: [current.notes ?? '', ...notesFragments].filter(Boolean).join(' | ') }
+          : {}),
+      },
+      include: {
+        supplier: true,
+        items: {
+          include: {
+            product: true,
+          },
+        },
+      },
+    });
+
+    res.json(updated);
   } catch (error) {
     next(error);
   }

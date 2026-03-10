@@ -5,6 +5,18 @@ import { prisma } from '../lib/prisma';
 
 export const inventoryRouter = Router();
 
+const FRONTEND_ITEM_CATEGORIES = [
+  'Cleaning',
+  'Hygiene',
+  'Food & Drinks',
+  'Cooking',
+  'Appliances',
+  'furniture',
+  'Cloth & Sheets',
+  'Kitchenware',
+  'Other',
+] as const;
+
 const movementSchema = z.object({
   productId: z.string().min(1),
   warehouseId: z.string().min(1),
@@ -68,6 +80,82 @@ const movementSchema = z.object({
   }
 });
 
+const allocationSchema = z.object({
+  productId: z.string().min(1),
+  unitId: z.string().min(1),
+  quantityDelta: z.number().int(),
+  minStock: z.number().int().min(0).optional(),
+});
+
+const toNumber = (value: Prisma.Decimal | number | string | null | undefined) => {
+  if (value == null) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const formatDate = (value: Date | null | undefined) => {
+  if (!value) return '';
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatDateTime = (value: Date) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  const hour = String(value.getHours()).padStart(2, '0');
+  const minute = String(value.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+};
+
+const formatDateLabel = (value: Date | null | undefined) => {
+  if (!value) return '—';
+  return value.toLocaleDateString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+  });
+};
+
+const toPurchaseOrderStatus = (
+  status: 'DRAFT' | 'ORDERED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED'
+) => {
+  if (status === 'PARTIALLY_RECEIVED') return 'partially-received';
+  if (status === 'RECEIVED') return 'received';
+  if (status === 'CANCELLED') return 'cancelled';
+  return 'pending';
+};
+
+const toFrontendItemType = (type: 'consumable' | 'non_consumable') =>
+  type === 'consumable' ? 'consumable' : 'reusable';
+
+const toFrontendCategory = (categoryName?: string | null) => {
+  if (!categoryName) return 'Other';
+  if (FRONTEND_ITEM_CATEGORIES.includes(categoryName as (typeof FRONTEND_ITEM_CATEGORIES)[number])) {
+    return categoryName;
+  }
+  const normalized = categoryName.toLowerCase();
+  if (normalized.includes('clean')) return 'Cleaning';
+  if (normalized.includes('hygiene') || normalized.includes('toilet')) return 'Hygiene';
+  if (normalized.includes('food') || normalized.includes('drink') || normalized.includes('pantry')) return 'Food & Drinks';
+  if (normalized.includes('cook') || normalized.includes('kitchen')) return 'Kitchenware';
+  if (normalized.includes('furniture')) return 'furniture';
+  if (normalized.includes('sheet') || normalized.includes('cloth') || normalized.includes('linen')) return 'Cloth & Sheets';
+  if (normalized.includes('appliance')) return 'Appliances';
+  return 'Other';
+};
+
+const toFrontendReferenceType = (
+  referenceType: 'purchase_order' | 'goods_receipt' | 'booking' | 'damage_incident' | 'manual_adjustment' | null
+) => {
+  if (referenceType === 'booking') return 'BOOKING';
+  if (referenceType === 'damage_incident') return 'DAMAGE';
+  if (referenceType === 'manual_adjustment') return 'MANUAL';
+  return 'PO';
+};
+
 inventoryRouter.get('/', async (_req, res, next) => {
   try {
     const balances = await prisma.inventoryBalance.findMany({
@@ -103,6 +191,446 @@ inventoryRouter.get('/', async (_req, res, next) => {
   }
 });
 
+inventoryRouter.get('/dataset', async (_req, res, next) => {
+  try {
+    const [warehouses, suppliers, products, balances, units, allocations, movements, purchaseOrders] =
+      await Promise.all([
+        prisma.warehouse.findMany({ orderBy: { name: 'asc' } }),
+        prisma.supplier.findMany({ orderBy: { createdAt: 'desc' } }),
+        prisma.product.findMany({
+          include: { supplier: true, category: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.inventoryBalance.findMany({
+          include: { product: true, warehouse: true },
+          orderBy: { updatedAt: 'desc' },
+        }),
+        prisma.unit.findMany({
+          include: { property: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.inventoryAllocation.findMany({
+          include: { product: { include: { category: true } }, unit: true },
+          orderBy: { updatedAt: 'desc' },
+        }),
+        prisma.stockMovement.findMany({
+          include: {
+            booking: {
+              select: {
+                id: true,
+                unit: { select: { id: true, name: true } },
+              },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.purchaseOrder.findMany({
+          include: {
+            supplier: true,
+            items: {
+              include: { product: true },
+              orderBy: { id: 'asc' },
+            },
+            receipts: {
+              include: {
+                warehouse: true,
+                receivedByUser: true,
+                items: {
+                  include: {
+                    product: true,
+                    purchaseOrderItem: true,
+                  },
+                },
+              },
+              orderBy: { receivedAt: 'desc' },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+      ]);
+
+    const unitById = new Map(units.map((unit) => [unit.id, unit]));
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const warehouseById = new Map(warehouses.map((warehouse) => [warehouse.id, warehouse]));
+
+    const movementSnapshots = new Map<string, { before: number; after: number }>();
+    const chronologicalMovements = [...movements].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+    );
+    const quantityTracker = new Map<string, number>();
+
+    chronologicalMovements.forEach((movement) => {
+      const key = `${movement.productId}:${movement.warehouseId}`;
+      const before = quantityTracker.get(key) ?? 0;
+      let after = before;
+
+      if (movement.type === 'IN') {
+        after = before + movement.quantity;
+      } else if (movement.type === 'OUT') {
+        after = before - movement.quantity;
+      } else {
+        after = movement.quantity;
+      }
+
+      quantityTracker.set(key, after);
+      movementSnapshots.set(movement.id, { before, after });
+    });
+
+    const stockMovements = movements.map((movement) => {
+      const product = productById.get(movement.productId);
+      const unitFromReference = movement.referenceId ? unitById.get(movement.referenceId) : undefined;
+      const unitFromBooking = movement.booking?.unit;
+      const resolvedUnit = unitFromReference ?? unitFromBooking;
+      const snapshot = movementSnapshots.get(movement.id) ?? { before: 0, after: 0 };
+      const movementType =
+        movement.type === 'OUT'
+          ? 'out'
+          : movement.type === 'IN'
+            ? 'in'
+            : snapshot.after >= snapshot.before
+              ? 'in'
+              : 'out';
+
+      return {
+        id: movement.id,
+        productId: movement.productId,
+        warehouseId: movement.warehouseId,
+        unitId: resolvedUnit?.id,
+        unitName: resolvedUnit?.name,
+        type: movementType,
+        quantity: movement.quantity,
+        reason: movement.reason ?? undefined,
+        referenceType: toFrontendReferenceType(movement.referenceType),
+        referenceId: movement.referenceId ?? undefined,
+        beforeQuantity: snapshot.before,
+        afterQuantity: snapshot.after,
+        movementDateTime: formatDateTime(movement.createdAt),
+        notes: movement.notes ?? undefined,
+        createdAt: formatDateTime(movement.createdAt),
+        createdBy: 'System',
+        productName: product?.name ?? 'Unknown Product',
+      };
+    });
+
+    const warehouseDirectoryData = warehouses.map((warehouse) => {
+      const inventoryBalances = balances
+        .filter((entry) => entry.warehouseId === warehouse.id)
+        .map((entry) => ({
+          productId: entry.productId,
+          productName: entry.product.name,
+          quantity: entry.quantity,
+          reorderLevel: entry.product.reorderLevel,
+        }));
+
+      const warehouseMovements = stockMovements
+        .filter((movement) => movement.warehouseId === warehouse.id)
+        .slice(0, 250)
+        .map((movement) => {
+          const noteText = `${movement.reason ?? ''} ${movement.notes ?? ''}`.toLowerCase();
+          const rowType = noteText.includes('transfer')
+            ? 'transfer'
+            : movement.type;
+          const [date = '', time = '00:00'] = movement.movementDateTime.split(' ');
+
+          return {
+            id: movement.id,
+            type: rowType,
+            productName: movement.productName,
+            quantity: movement.quantity,
+            date,
+            time,
+            recordedAt: movement.movementDateTime,
+            note: movement.reason || movement.notes || 'N/A',
+          };
+        });
+
+      return {
+        id: warehouse.id,
+        name: warehouse.name,
+        location: warehouse.location ?? '',
+        description: `Code: ${warehouse.code}`,
+        isActive: true,
+        inventoryBalances,
+        stockMovements: warehouseMovements,
+      };
+    });
+
+    const purchaseOrdersPayload = purchaseOrders.map((purchaseOrder) => {
+      const orderedAt = purchaseOrder.orderedAt ?? purchaseOrder.createdAt;
+      const expectedFromNotesMatch = purchaseOrder.notes?.match(/Expected:\s*(\d{4}-\d{2}-\d{2})/i);
+      const expectedFromNotes = expectedFromNotesMatch ? new Date(`${expectedFromNotesMatch[1]}T00:00:00`) : null;
+      const expectedDelivery = expectedFromNotes ?? purchaseOrder.receivedAt ?? new Date(orderedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const totalAmount = purchaseOrder.items.reduce(
+        (sum, item) => sum + toNumber(item.unitCost) * item.quantityOrdered,
+        0
+      );
+
+      return {
+        id: purchaseOrder.id,
+        supplierId: purchaseOrder.supplierId,
+        orderDate: formatDate(orderedAt),
+        expectedDelivery: formatDate(expectedDelivery),
+        status: toPurchaseOrderStatus(purchaseOrder.status),
+        totalAmount,
+        createdAt: formatDate(purchaseOrder.createdAt),
+      };
+    });
+
+    const purchaseOrderLines = purchaseOrders.flatMap((purchaseOrder) =>
+      purchaseOrder.items.map((item) => ({
+        id: item.id,
+        poId: purchaseOrder.id,
+        productId: item.productId,
+        quantity: item.quantityOrdered,
+        unitPrice: toNumber(item.unitCost),
+        receivedQuantity: item.quantityReceived,
+      }))
+    );
+
+    const goodsReceipts = purchaseOrders.flatMap((purchaseOrder) =>
+      purchaseOrder.receipts.map((receipt) => ({
+        id: receipt.id,
+        poId: purchaseOrder.id,
+        receiptNo: receipt.receiptNo,
+        warehouseId: receipt.warehouseId,
+        warehouse: receipt.warehouse.name,
+        receivedBy: receipt.receivedByUser?.name ?? 'System',
+        receivedAt: formatDateLabel(receipt.receivedAt),
+        notes: receipt.notes ?? '',
+        items: receipt.items.map((item) => ({
+          poItemId: item.purchaseOrderItemId,
+          description: item.product.name,
+          qtyReceived: item.quantityReceived,
+          unit: item.product.unit,
+          unitCost: toNumber(item.unitCost),
+        })),
+        evidenceImages: [],
+      }))
+    );
+
+    const latestPurchaseOrderByProductId = new Map<
+      string,
+      { purchaseOrder: (typeof purchaseOrdersPayload)[number]; unitCost: number }
+    >();
+
+    purchaseOrders.forEach((purchaseOrder, index) => {
+      const payloadOrder = purchaseOrdersPayload[index];
+      purchaseOrder.items.forEach((item) => {
+        if (!latestPurchaseOrderByProductId.has(item.productId)) {
+          latestPurchaseOrderByProductId.set(item.productId, {
+            purchaseOrder: payloadOrder,
+            unitCost: toNumber(item.unitCost),
+          });
+        }
+      });
+    });
+
+    const replenishmentItems = products.map((product) => {
+      const productBalances = balances.filter((entry) => entry.productId === product.id);
+      const totalStock = productBalances.reduce((sum, entry) => sum + entry.quantity, 0);
+      const primaryBalance = [...productBalances].sort((a, b) => b.quantity - a.quantity)[0];
+      const primaryWarehouse = primaryBalance
+        ? warehouseById.get(primaryBalance.warehouseId)
+        : warehouses[0];
+      const latestPO = latestPurchaseOrderByProductId.get(product.id);
+      const unitCost = latestPO?.unitCost ?? 0;
+      const productMovements = stockMovements
+        .filter((movement) => movement.productId === product.id)
+        .map(({ productName: _ignoredProductName, ...movement }) => movement);
+
+      return {
+        id: product.id,
+        sku: product.sku,
+        name: product.name,
+        type: toFrontendItemType(product.itemType),
+        category: toFrontendCategory(product.category?.name),
+        unit: product.unit,
+        currentStock: totalStock,
+        minStock: product.reorderLevel,
+        shortfall: Math.max(0, product.reorderLevel - totalStock),
+        isLowStock: totalStock < product.reorderLevel,
+        unitCost,
+        totalValue: totalStock * unitCost,
+        warehouseId: primaryWarehouse?.id ?? '',
+        warehouseName: primaryWarehouse?.name ?? 'Unassigned',
+        isActive: product.isActive,
+        createdAt: formatDate(product.createdAt),
+        updatedAt: formatDate(product.updatedAt),
+        lastModifiedBy: 'System',
+        currentsupplierId: product.supplierId ?? '',
+        supplierName: product.supplier?.name ?? '',
+        stockMovements: productMovements,
+        damageAdjustments: [],
+        lastPurchaseOrder: latestPO?.purchaseOrder,
+        auditNotes: '',
+      };
+    });
+
+    const unitsPayload = units.map((unit) => {
+      const itemCount = allocations.filter((allocation) => allocation.unitId === unit.id).length;
+      return {
+        id: unit.id,
+        name: unit.name,
+        type: unit.property?.type ?? 'unit',
+        location: unit.property?.location ?? unit.property?.address ?? '',
+        itemCount,
+        imageUrl: '/heroimage.png',
+      };
+    });
+
+    const unitItems = allocations.map((allocation) => ({
+      id: allocation.id,
+      name: allocation.product.name,
+      type: toFrontendItemType(allocation.product.itemType),
+      category: toFrontendCategory(allocation.product.category?.name),
+      unit: allocation.product.unit,
+      currentStock: allocation.quantity,
+      minStock: allocation.minStock,
+      assignedToUnit: allocation.unitId,
+    }));
+
+    const unitStockMovements = stockMovements
+      .filter((movement) => movement.type === 'out' && movement.unitId)
+      .map((movement) => {
+        const [recordedDate = '', recordedTime = '00:00'] = movement.movementDateTime.split(' ');
+        const warehouse = warehouseById.get(movement.warehouseId || '');
+        return {
+          id: movement.id,
+          productId: movement.productId,
+          productName: movement.productName,
+          unitId: movement.unitId,
+          unitName: movement.unitName ?? 'Unknown Unit',
+          sourceWarehouseId: movement.warehouseId || '',
+          sourceWarehouseName: warehouse?.name ?? 'Unknown Warehouse',
+          quantity: movement.quantity,
+          reason: movement.reason || movement.notes || 'N/A',
+          referenceType: movement.referenceType,
+          referenceId: movement.referenceId,
+          beforeQuantity: movement.beforeQuantity ?? 0,
+          afterQuantity: movement.afterQuantity ?? 0,
+          recordedAt: movement.movementDateTime,
+          recordedDate,
+          recordedTime,
+          createdBy: movement.createdBy || 'System',
+        };
+      });
+
+    const supplierDirectoryData = suppliers.map((supplier) => {
+      const supplierPurchaseOrders = purchaseOrdersPayload.filter(
+        (purchaseOrder) => purchaseOrder.supplierId === supplier.id && purchaseOrder.status !== 'cancelled'
+      );
+      const latestOrder = supplierPurchaseOrders[0];
+
+      return {
+        id: supplier.id,
+        name: supplier.name,
+        contactName: supplier.contactName ?? '',
+        email: supplier.contactEmail ?? '',
+        phone: supplier.contactPhone ?? '',
+        address: supplier.address ?? '',
+        isActive: true,
+        activePOs: supplierPurchaseOrders.length,
+        lastOrderDate: latestOrder ? formatDateLabel(new Date(latestOrder.orderDate)) : '—',
+        notes: '',
+        createdAt: formatDateLabel(supplier.createdAt),
+      };
+    });
+
+    const dashboardSummary = {
+      totalItems: replenishmentItems.length,
+      totalStocks: replenishmentItems.reduce((sum, item) => sum + item.currentStock, 0),
+      lowStockCount: replenishmentItems.filter((item) => item.currentStock < item.minStock).length,
+      replenishmentNeeded: replenishmentItems.reduce(
+        (sum, item) => sum + Math.max(0, item.minStock - item.currentStock),
+        0
+      ),
+    };
+
+    const warehousesPayload = warehouses.map((warehouse) => ({
+      id: warehouse.id,
+      name: warehouse.name,
+      location: warehouse.location ?? '',
+      capacity: undefined,
+      createdAt: formatDate(warehouse.createdAt),
+    }));
+
+    const suppliersPayload = suppliers.map((supplier) => ({
+      id: supplier.id,
+      name: supplier.name,
+      email: supplier.contactEmail ?? '',
+      phone: supplier.contactPhone ?? '',
+      address: supplier.address ?? '',
+      createdAt: formatDate(supplier.createdAt),
+      updatedAt: formatDate(supplier.updatedAt),
+    }));
+
+    res.json({
+      dashboardSummary,
+      warehouses: warehousesPayload,
+      suppliers: suppliersPayload,
+      supplierDirectoryData,
+      warehouseDirectoryData,
+      stockMovements: stockMovements.map(({ productName: _ignoredProductName, ...movement }) => movement),
+      damageAdjustments: [],
+      purchaseOrders: purchaseOrdersPayload,
+      purchaseOrderLines,
+      goodsReceipts,
+      replenishmentItems,
+      units: unitsPayload,
+      unitItems,
+      unitStockMovements,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+inventoryRouter.post('/allocations', async (req, res, next) => {
+  try {
+    const payload = allocationSchema.parse(req.body);
+
+    const allocation = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.inventoryAllocation.findUnique({
+        where: {
+          productId_unitId: {
+            productId: payload.productId,
+            unitId: payload.unitId,
+          },
+        },
+      });
+
+      const currentQuantity = existing?.quantity ?? 0;
+      const nextQuantity = currentQuantity + payload.quantityDelta;
+      if (nextQuantity < 0) {
+        throw new Error('Insufficient allocation quantity for this unit');
+      }
+
+      return tx.inventoryAllocation.upsert({
+        where: {
+          productId_unitId: {
+            productId: payload.productId,
+            unitId: payload.unitId,
+          },
+        },
+        update: {
+          quantity: nextQuantity,
+          ...(payload.minStock !== undefined ? { minStock: payload.minStock } : {}),
+        },
+        create: {
+          productId: payload.productId,
+          unitId: payload.unitId,
+          quantity: Math.max(0, payload.quantityDelta),
+          minStock: payload.minStock ?? 0,
+        },
+      });
+    });
+
+    res.status(201).json(allocation);
+  } catch (error) {
+    next(error);
+  }
+});
+
 inventoryRouter.post('/movements', async (req, res, next) => {
   try {
     const payload = movementSchema.parse(req.body);
@@ -118,13 +646,8 @@ inventoryRouter.post('/movements', async (req, res, next) => {
       });
 
       const existingQty = current?.quantity ?? 0;
-
       const delta = payload.type === 'OUT' ? -payload.quantity : payload.quantity;
-
-      const nextQty =
-        payload.type === 'ADJUSTMENT'
-          ? payload.quantity
-          : existingQty + delta;
+      const nextQty = payload.type === 'ADJUSTMENT' ? payload.quantity : existingQty + delta;
 
       if (nextQty < 0) {
         throw new Error('Insufficient stock for OUT movement');

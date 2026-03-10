@@ -10,6 +10,8 @@ import { productCategoriesRouter } from './routes/productCategories';
 import { productsRouter } from './routes/products';
 import { purchaseOrdersRouter } from './routes/purchaseOrders';
 import { suppliersRouter } from './routes/suppliers';
+import { unitsRouter } from './routes/units';
+import { bookingsRouter } from './routes/bookings';
 
 dotenv.config();
 
@@ -32,6 +34,8 @@ app.use('/api/products', productsRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/inventory', inventoryRouter);
 app.use('/api/purchase-orders', purchaseOrdersRouter);
+app.use('/api/units', unitsRouter);
+app.use('/api/bookings', bookingsRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ message: 'API route not found' });

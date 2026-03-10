@@ -14,6 +14,16 @@ async function main() {
     },
   });
 
+  const secondaryWarehouse = await prisma.warehouse.upsert({
+    where: { code: 'UTIL' },
+    update: {},
+    create: {
+      code: 'UTIL',
+      name: 'Utility Warehouse',
+      location: 'Service Floor',
+    },
+  });
+
   const supplier =
     (await prisma.supplier.findFirst({ where: { name: 'Default Supplier Inc.' } })) ??
     (await prisma.supplier.create({
@@ -26,7 +36,7 @@ async function main() {
       },
     }));
 
-  const [pantryCategory] = await Promise.all([
+  const [pantryCategory, cleaningCategory, furnitureCategory] = await Promise.all([
     prisma.inventoryCategory.upsert({
       where: { code: 'PANTRY_SUPPLIES' },
       update: {
@@ -106,6 +116,66 @@ async function main() {
         categoryId: pantryCategory.id,
       },
     }),
+    prisma.product.upsert({
+      where: { sku: 'SKU-PAPER-TOWEL' },
+      update: {
+        name: 'Paper Towels',
+        unit: 'roll',
+        itemType: 'consumable',
+        reorderLevel: 30,
+        supplierId: supplier.id,
+        categoryId: cleaningCategory.id,
+      },
+      create: {
+        sku: 'SKU-PAPER-TOWEL',
+        name: 'Paper Towels',
+        unit: 'roll',
+        itemType: 'consumable',
+        reorderLevel: 30,
+        supplierId: supplier.id,
+        categoryId: cleaningCategory.id,
+      },
+    }),
+    prisma.product.upsert({
+      where: { sku: 'SKU-LAUNDRY-DET' },
+      update: {
+        name: 'Laundry Detergent',
+        unit: 'bottle',
+        itemType: 'consumable',
+        reorderLevel: 18,
+        supplierId: supplier.id,
+        categoryId: cleaningCategory.id,
+      },
+      create: {
+        sku: 'SKU-LAUNDRY-DET',
+        name: 'Laundry Detergent',
+        unit: 'bottle',
+        itemType: 'consumable',
+        reorderLevel: 18,
+        supplierId: supplier.id,
+        categoryId: cleaningCategory.id,
+      },
+    }),
+    prisma.product.upsert({
+      where: { sku: 'SKU-FOLDING-CHAIR' },
+      update: {
+        name: 'Folding Chair',
+        unit: 'piece',
+        itemType: 'non_consumable',
+        reorderLevel: 4,
+        supplierId: supplier.id,
+        categoryId: furnitureCategory.id,
+      },
+      create: {
+        sku: 'SKU-FOLDING-CHAIR',
+        name: 'Folding Chair',
+        unit: 'piece',
+        itemType: 'non_consumable',
+        reorderLevel: 4,
+        supplierId: supplier.id,
+        categoryId: furnitureCategory.id,
+      },
+    }),
   ]);
 
   await Promise.all(
@@ -120,12 +190,187 @@ async function main() {
         update: {},
         create: {
           productId: product.id,
-          warehouseId: warehouse.id,
-          quantity: index === 0 ? 100 : 80,
+          warehouseId: index % 2 === 0 ? warehouse.id : secondaryWarehouse.id,
+          quantity: [100, 80, 60, 24, 8][index] ?? 10,
         },
       })
     )
   );
+
+  const seedPurchaseOrder = await prisma.purchaseOrder.upsert({
+    where: { poNumber: 'PO-SEED-001' },
+    update: {
+      supplierId: supplier.id,
+      status: 'PARTIALLY_RECEIVED',
+      orderedAt: new Date('2025-03-01T09:00:00.000Z'),
+      notes: 'Expected: 2025-03-08 | Seeded purchase order for inventory module',
+    },
+    create: {
+      poNumber: 'PO-SEED-001',
+      supplierId: supplier.id,
+      status: 'PARTIALLY_RECEIVED',
+      orderedAt: new Date('2025-03-01T09:00:00.000Z'),
+      notes: 'Expected: 2025-03-08 | Seeded purchase order for inventory module',
+    },
+  });
+
+  const seedPoItems = await Promise.all([
+    prisma.purchaseOrderItem.upsert({
+      where: {
+        purchaseOrderId_productId: {
+          purchaseOrderId: seedPurchaseOrder.id,
+          productId: products[0].id,
+        },
+      },
+      update: {
+        quantityOrdered: 40,
+        quantityReceived: 20,
+        unitCost: 250,
+      },
+      create: {
+        purchaseOrderId: seedPurchaseOrder.id,
+        productId: products[0].id,
+        quantityOrdered: 40,
+        quantityReceived: 20,
+        unitCost: 250,
+      },
+    }),
+    prisma.purchaseOrderItem.upsert({
+      where: {
+        purchaseOrderId_productId: {
+          purchaseOrderId: seedPurchaseOrder.id,
+          productId: products[2].id,
+        },
+      },
+      update: {
+        quantityOrdered: 60,
+        quantityReceived: 60,
+        unitCost: 85,
+      },
+      create: {
+        purchaseOrderId: seedPurchaseOrder.id,
+        productId: products[2].id,
+        quantityOrdered: 60,
+        quantityReceived: 60,
+        unitCost: 85,
+      },
+    }),
+  ]);
+
+  const seedReceipt = await prisma.goodsReceipt.upsert({
+    where: { receiptNo: 'GR-SEED-001' },
+    update: {
+      purchaseOrderId: seedPurchaseOrder.id,
+      warehouseId: warehouse.id,
+      notes: 'Partial receiving for seeded PO',
+      receivedAt: new Date('2025-03-04T10:00:00.000Z'),
+    },
+    create: {
+      receiptNo: 'GR-SEED-001',
+      purchaseOrderId: seedPurchaseOrder.id,
+      warehouseId: warehouse.id,
+      notes: 'Partial receiving for seeded PO',
+      receivedAt: new Date('2025-03-04T10:00:00.000Z'),
+    },
+  });
+
+  await Promise.all([
+    prisma.goodsReceiptItem.upsert({
+      where: {
+        goodsReceiptId_purchaseOrderItemId: {
+          goodsReceiptId: seedReceipt.id,
+          purchaseOrderItemId: seedPoItems[0].id,
+        },
+      },
+      update: {
+        productId: products[0].id,
+        quantityReceived: 20,
+        unitCost: 250,
+      },
+      create: {
+        goodsReceiptId: seedReceipt.id,
+        purchaseOrderItemId: seedPoItems[0].id,
+        productId: products[0].id,
+        quantityReceived: 20,
+        unitCost: 250,
+      },
+    }),
+    prisma.goodsReceiptItem.upsert({
+      where: {
+        goodsReceiptId_purchaseOrderItemId: {
+          goodsReceiptId: seedReceipt.id,
+          purchaseOrderItemId: seedPoItems[1].id,
+        },
+      },
+      update: {
+        productId: products[2].id,
+        quantityReceived: 60,
+        unitCost: 85,
+      },
+      create: {
+        goodsReceiptId: seedReceipt.id,
+        purchaseOrderItemId: seedPoItems[1].id,
+        productId: products[2].id,
+        quantityReceived: 60,
+        unitCost: 85,
+      },
+    }),
+  ]);
+
+  await Promise.all([
+    prisma.stockMovement.upsert({
+      where: { id: 'seed-stock-movement-in-1' },
+      update: {
+        productId: products[0].id,
+        warehouseId: warehouse.id,
+        type: 'IN',
+        quantity: 20,
+        reason: 'Purchase order receiving',
+        referenceType: 'goods_receipt',
+        referenceId: seedReceipt.id,
+        purchaseOrderId: seedPurchaseOrder.id,
+        goodsReceiptId: seedReceipt.id,
+        notes: 'Seeded inbound movement',
+      },
+      create: {
+        id: 'seed-stock-movement-in-1',
+        productId: products[0].id,
+        warehouseId: warehouse.id,
+        type: 'IN',
+        quantity: 20,
+        reason: 'Purchase order receiving',
+        referenceType: 'goods_receipt',
+        referenceId: seedReceipt.id,
+        purchaseOrderId: seedPurchaseOrder.id,
+        goodsReceiptId: seedReceipt.id,
+        notes: 'Seeded inbound movement',
+      },
+    }),
+    prisma.stockMovement.upsert({
+      where: { id: 'seed-stock-movement-out-1' },
+      update: {
+        productId: products[2].id,
+        warehouseId: secondaryWarehouse.id,
+        type: 'OUT',
+        quantity: 8,
+        reason: 'Seeded unit distribution',
+        referenceType: 'manual_adjustment',
+        referenceId: 'UNIT-SEED-001',
+        notes: 'Seeded outbound movement',
+      },
+      create: {
+        id: 'seed-stock-movement-out-1',
+        productId: products[2].id,
+        warehouseId: secondaryWarehouse.id,
+        type: 'OUT',
+        quantity: 8,
+        reason: 'Seeded unit distribution',
+        referenceType: 'manual_adjustment',
+        referenceId: 'UNIT-SEED-001',
+        notes: 'Seeded outbound movement',
+      },
+    }),
+  ]);
 
   const property = await prisma.property.upsert({
     where: { id: 'seed-property-1' },
