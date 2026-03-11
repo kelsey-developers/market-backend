@@ -635,6 +635,30 @@ inventoryRouter.post('/movements', async (req, res, next) => {
   try {
     const payload = movementSchema.parse(req.body);
 
+    // Enforce inventory process:
+    // - Stock-in must come from PO receiving (Goods Receipt) OR an internal transfer-in record.
+    // - No manual stock-in adjustments through this endpoint.
+    if (payload.type === 'IN') {
+      const isGoodsReceipt =
+        payload.referenceType === 'goods_receipt' && Boolean(payload.goodsReceiptId);
+
+      const isTransferIn =
+        payload.referenceType === 'manual_adjustment' &&
+        typeof payload.notes === 'string' &&
+        payload.notes.toLowerCase().includes('transfer from');
+
+      if (!isGoodsReceipt && !isTransferIn) {
+        throw new Error(
+          'Stock-in is only allowed via Goods Receipt (PO receiving) or warehouse transfer.'
+        );
+      }
+    }
+
+    // Inventory balance adjustments should be explicitly marked.
+    if (payload.type === 'ADJUSTMENT' && payload.referenceType !== 'manual_adjustment') {
+      throw new Error('Adjustments must be logged as manual_adjustment.');
+    }
+
     const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const current = await tx.inventoryBalance.findUnique({
         where: {
