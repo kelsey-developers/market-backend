@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
+  engineType = "binary"
 }
 
 datasource db {
@@ -117,6 +118,7 @@ model User {
   reportedDamageIncidents      DamageIncident[]     @relation("DamageIncidentReporter")
   resolvedDamageIncidents      DamageIncident[]     @relation("DamageIncidentResolver")
   uploadedDamageAttachments    DamageAttachment[]   @relation("DamageAttachmentUploader")
+  uploadedGoodsReceiptAttachments GoodsReceiptAttachment[] @relation("GoodsReceiptAttachmentUploader")
   recordedPaymentTransactions  PaymentTransaction[] @relation("PaymentTransactionRecorder")
   receivedGoodsReceipts        GoodsReceipt[]       @relation("GoodsReceiptReceiver")
   propertyAccesses             UserPropertyAccess[]
@@ -470,9 +472,26 @@ model GoodsReceipt {
   warehouse        Warehouse         @relation(fields: [warehouseId], references: [id])
   receivedByUser   User?             @relation("GoodsReceiptReceiver", fields: [receivedByUserId], references: [id])
   items            GoodsReceiptItem[]
+  attachments      GoodsReceiptAttachment[]
   stockMovements   StockMovement[]
 
   @@index([purchaseOrderId, receivedAt])
+}
+
+model GoodsReceiptAttachment {
+  id               String       @id @default(cuid())
+  goodsReceiptId   String
+  fileUrl          String
+  fileName         String?
+  mimeType         String?
+  sizeBytes        Int?
+  uploadedByUserId String?
+  createdAt        DateTime     @default(now())
+
+  goodsReceipt     GoodsReceipt @relation(fields: [goodsReceiptId], references: [id])
+  uploadedByUser   User?        @relation("GoodsReceiptAttachmentUploader", fields: [uploadedByUserId], references: [id])
+
+  @@index([goodsReceiptId])
 }
 
 model GoodsReceiptItem {

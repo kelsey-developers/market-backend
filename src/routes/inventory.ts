@@ -87,6 +87,12 @@ const allocationSchema = z.object({
   minStock: z.number().int().min(0).optional(),
 });
 
+const createWarehouseSchema = z.object({
+  name: z.string().min(1),
+  location: z.string().optional(),
+  code: z.string().min(1).optional(),
+});
+
 const toNumber = (value: Prisma.Decimal | number | string | null | undefined) => {
   if (value == null) return 0;
   const parsed = Number(value);
@@ -231,63 +237,148 @@ inventoryRouter.get('/', async (_req, res, next) => {
   }
 });
 
+inventoryRouter.post('/warehouses', async (req, res, next) => {
+  try {
+    const payload = createWarehouseSchema.parse(req.body);
+    const baseCode =
+      payload.code?.trim() ||
+      payload.name
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 20) ||
+      `WH-${Date.now()}`;
+
+    // Ensure code uniqueness with a simple suffix strategy when necessary.
+    let code = baseCode;
+    let suffix = 1;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const existing = await prisma.warehouse.findUnique({ where: { code } });
+      if (!existing) break;
+      suffix += 1;
+      code = `${baseCode}-${suffix}`;
+    }
+
+    const created = await prisma.warehouse.create({
+      data: {
+        code,
+        name: payload.name.trim(),
+        location: payload.location?.trim() || null,
+      },
+    });
+
+    res.status(201).json({
+      warehouse: {
+        id: created.id,
+        name: created.name,
+        location: created.location ?? '',
+        capacity: undefined,
+        createdAt: formatDate(created.createdAt),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 inventoryRouter.get('/dataset', async (req, res, next) => {
   try {
-    const [warehouses, suppliers, products, balances, units, allocations, movements, purchaseOrders] =
-      await Promise.all([
-        prisma.warehouse.findMany({ orderBy: { name: 'asc' } }),
-        prisma.supplier.findMany({ orderBy: { createdAt: 'desc' } }),
-        prisma.product.findMany({
-          include: { supplier: true, category: true },
-          orderBy: { createdAt: 'desc' },
-        }),
-        prisma.inventoryBalance.findMany({
-          include: { product: true, warehouse: true },
-          orderBy: { updatedAt: 'desc' },
-        }),
-        prisma.unit.findMany({
-          include: { property: true },
-          orderBy: { createdAt: 'desc' },
-        }),
-        prisma.inventoryAllocation.findMany({
-          include: { product: { include: { category: true } }, unit: true },
-          orderBy: { updatedAt: 'desc' },
-        }),
-        prisma.stockMovement.findMany({
-          include: {
-            booking: {
-              select: {
-                id: true,
-                unit: { select: { id: true, name: true } },
-              },
+    const [warehouses, suppliers, products, balances, units, allocations, movements] = await Promise.all([
+      prisma.warehouse.findMany({ orderBy: { name: 'asc' } }),
+      prisma.supplier.findMany({ orderBy: { createdAt: 'desc' } }),
+      prisma.product.findMany({
+        include: { supplier: true, category: true },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.inventoryBalance.findMany({
+        include: { product: true, warehouse: true },
+        orderBy: { updatedAt: 'desc' },
+      }),
+      prisma.unit.findMany({
+        include: { property: true },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.inventoryAllocation.findMany({
+        include: { product: { include: { category: true } }, unit: true },
+        orderBy: { updatedAt: 'desc' },
+      }),
+      prisma.stockMovement.findMany({
+        include: {
+          booking: {
+            select: {
+              id: true,
+              unit: { select: { id: true, name: true } },
             },
           },
-          orderBy: { createdAt: 'desc' },
-        }),
-        prisma.purchaseOrder.findMany({
-          include: {
-            supplier: true,
-            items: {
-              include: { product: true },
-              orderBy: { id: 'asc' },
-            },
-            receipts: {
-              include: {
-                warehouse: true,
-                receivedByUser: true,
-                items: {
-                  include: {
-                    product: true,
-                    purchaseOrderItem: true,
-                  },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    let purchaseOrders: any[];
+    try {
+      purchaseOrders = await prisma.purchaseOrder.findMany({
+        include: {
+          supplier: true,
+          items: {
+            include: { product: true },
+            orderBy: { id: 'asc' },
+          },
+          receipts: {
+            include: {
+              warehouse: true,
+              receivedByUser: true,
+              attachments: {
+                orderBy: { createdAt: 'asc' },
+              },
+              items: {
+                include: {
+                  product: true,
+                  purchaseOrderItem: true,
                 },
               },
-              orderBy: { receivedAt: 'desc' },
             },
+            orderBy: { receivedAt: 'desc' },
           },
-          orderBy: { createdAt: 'desc' },
-        }),
-      ]);
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : '';
+      const attachmentTableMissing =
+        message.includes('goodsreceiptattachment') &&
+        (message.includes('does not exist') || message.includes('doesn\'t exist'));
+
+      if (!attachmentTableMissing) {
+        throw error;
+      }
+
+      purchaseOrders = await prisma.purchaseOrder.findMany({
+        include: {
+          supplier: true,
+          items: {
+            include: { product: true },
+            orderBy: { id: 'asc' },
+          },
+          receipts: {
+            include: {
+              warehouse: true,
+              receivedByUser: true,
+              items: {
+                include: {
+                  product: true,
+                  purchaseOrderItem: true,
+                },
+              },
+            },
+            orderBy: { receivedAt: 'desc' },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
 
     const unitById = new Map(units.map((unit) => [unit.id, unit]));
     const productById = new Map(products.map((product) => [product.id, product]));
@@ -395,13 +486,13 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       };
     });
 
-    const purchaseOrdersPayload = purchaseOrders.map((purchaseOrder) => {
+    const purchaseOrdersPayload = purchaseOrders.map((purchaseOrder: any) => {
       const orderedAt = purchaseOrder.orderedAt ?? purchaseOrder.createdAt;
       const expectedFromNotesMatch = purchaseOrder.notes?.match(/Expected:\s*(\d{4}-\d{2}-\d{2})/i);
       const expectedFromNotes = expectedFromNotesMatch ? new Date(`${expectedFromNotesMatch[1]}T00:00:00`) : null;
       const expectedDelivery = expectedFromNotes ?? purchaseOrder.receivedAt ?? new Date(orderedAt.getTime() + 7 * 24 * 60 * 60 * 1000);
       const totalAmount = purchaseOrder.items.reduce(
-        (sum, item) => sum + toNumber(item.unitCost) * item.quantityOrdered,
+        (sum: number, item: any) => sum + toNumber(item.unitCost) * item.quantityOrdered,
         0
       );
 
@@ -416,8 +507,8 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       };
     });
 
-    const purchaseOrderLines = purchaseOrders.flatMap((purchaseOrder) =>
-      purchaseOrder.items.map((item) => ({
+    const purchaseOrderLines = purchaseOrders.flatMap((purchaseOrder: any) =>
+      purchaseOrder.items.map((item: any) => ({
         id: item.id,
         poId: purchaseOrder.id,
         productId: item.productId,
@@ -427,8 +518,8 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       }))
     );
 
-    const goodsReceipts = purchaseOrders.flatMap((purchaseOrder) =>
-      purchaseOrder.receipts.map((receipt) => ({
+    const goodsReceipts = purchaseOrders.flatMap((purchaseOrder: any) =>
+      purchaseOrder.receipts.map((receipt: any) => ({
         id: receipt.id,
         poId: purchaseOrder.id,
         receiptNo: receipt.receiptNo,
@@ -437,14 +528,15 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
         receivedBy: receipt.receivedByUser?.name ?? 'System',
         receivedAt: formatDateLabel(receipt.receivedAt),
         notes: receipt.notes ?? '',
-        items: receipt.items.map((item) => ({
+        items: receipt.items.map((item: any) => ({
           poItemId: item.purchaseOrderItemId,
           description: item.product.name,
           qtyReceived: item.quantityReceived,
           unit: item.product.unit,
           unitCost: toNumber(item.unitCost),
         })),
-        evidenceImages: [],
+        evidenceImages: ((receipt as unknown as { attachments?: Array<{ fileUrl: string }> }).attachments ?? [])
+          .map((attachment) => attachment.fileUrl),
       }))
     );
 
@@ -453,9 +545,9 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       { purchaseOrder: (typeof purchaseOrdersPayload)[number]; unitCost: number }
     >();
 
-    purchaseOrders.forEach((purchaseOrder, index) => {
+    purchaseOrders.forEach((purchaseOrder: any, index) => {
       const payloadOrder = purchaseOrdersPayload[index];
-      purchaseOrder.items.forEach((item) => {
+      purchaseOrder.items.forEach((item: any) => {
         if (!latestPurchaseOrderByProductId.has(item.productId)) {
           latestPurchaseOrderByProductId.set(item.productId, {
             purchaseOrder: payloadOrder,

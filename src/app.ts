@@ -1,11 +1,13 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
+import path from 'path';
 import { Prisma } from '@prisma/client';
 import { ZodError } from 'zod';
 import { env } from './config/env';
 import { healthRouter } from './routes/health';
 import { inventoryRouter } from './routes/inventory';
+import { goodsReceiptsRouter } from './routes/goodsReceipts';
 import { productCategoriesRouter } from './routes/productCategories';
 import { productsRouter } from './routes/products';
 import { purchaseOrdersRouter } from './routes/purchaseOrders';
@@ -23,6 +25,7 @@ app.use(
   })
 );
 app.use(express.json());
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 app.get('/', (_req, res) => {
   res.json({ message: 'market-backend is running' });
@@ -34,6 +37,7 @@ app.use('/api/products', productsRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/inventory', inventoryRouter);
 app.use('/api/purchase-orders', purchaseOrdersRouter);
+app.use('/api/goods-receipts', goodsReceiptsRouter);
 app.use('/api/units', unitsRouter);
 app.use('/api/bookings', bookingsRouter);
 
