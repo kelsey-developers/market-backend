@@ -156,6 +156,46 @@ const toFrontendReferenceType = (
   return 'PO';
 };
 
+const UNIT_META_PREFIX = '__meta__:';
+
+type UnitStatus = 'available' | 'unavailable' | 'maintenance';
+
+type UnitMeta = {
+  status?: UnitStatus;
+  isFeatured?: boolean;
+};
+
+const parseUnitMetaFromLabel = (value?: string | null): UnitMeta => {
+  if (!value || !value.startsWith(UNIT_META_PREFIX)) return {};
+
+  try {
+    const parsed = JSON.parse(value.slice(UNIT_META_PREFIX.length)) as UnitMeta;
+    return {
+      status: parsed.status,
+      isFeatured: parsed.isFeatured,
+    };
+  } catch {
+    return {};
+  }
+};
+
+const resolveUnitStatus = (isActive: boolean, metaStatus?: UnitStatus): UnitStatus => {
+  if (metaStatus === 'maintenance') return 'maintenance';
+  return isActive ? 'available' : 'unavailable';
+};
+
+const parseCity = (location?: string | null): string | undefined => {
+  if (!location) return undefined;
+  const parts = location
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+
+  const cityToken = parts.find((part) => /city/i.test(part));
+  return cityToken ?? parts[parts.length - 1];
+};
+
 inventoryRouter.get('/', async (_req, res, next) => {
   try {
     const balances = await prisma.inventoryBalance.findMany({
@@ -191,7 +231,7 @@ inventoryRouter.get('/', async (_req, res, next) => {
   }
 });
 
-inventoryRouter.get('/dataset', async (_req, res, next) => {
+inventoryRouter.get('/dataset', async (req, res, next) => {
   try {
     const [warehouses, suppliers, products, balances, units, allocations, movements, purchaseOrders] =
       await Promise.all([
@@ -466,15 +506,35 @@ inventoryRouter.get('/dataset', async (_req, res, next) => {
       };
     });
 
+    const includeMeta =
+      String(req.query.includeMeta ?? '').toLowerCase() === 'true' ||
+      String(req.query.v ?? '') === '2';
+
     const unitsPayload = units.map((unit) => {
       const itemCount = allocations.filter((allocation) => allocation.unitId === unit.id).length;
-      return {
+      const location = unit.property?.location ?? unit.property?.address ?? '';
+
+      const basePayload = {
         id: unit.id,
         name: unit.name,
         type: unit.property?.type ?? 'unit',
-        location: unit.property?.location ?? unit.property?.address ?? '',
+        location,
         itemCount,
         imageUrl: '/heroimage.png',
+      };
+
+      if (!includeMeta) return basePayload;
+
+      const meta = parseUnitMetaFromLabel(unit.floorLabel);
+      const status = resolveUnitStatus(unit.isActive, meta.status);
+      const city = parseCity(location);
+
+      return {
+        ...basePayload,
+        code: unit.code,
+        city,
+        status,
+        isFeatured: meta.isFeatured === true,
       };
     });
 
