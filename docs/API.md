@@ -34,6 +34,13 @@ Base URL: `http://localhost:4000` (or your tunnel URL, e.g. `https://xxx.tryclou
 | POST | `/api/purchase-orders` | Create purchase order |
 | POST | `/api/purchase-orders/:id/receive` | Receive items (creates goods receipt) |
 | PATCH | `/api/purchase-orders/:id` | Update purchase order |
+| GET | `/api/damage-incidents` | List damage incidents |
+| POST | `/api/damage-incidents` | Create damage incident |
+| GET | `/api/damage-incidents/:id` | Get one damage incident |
+| PATCH | `/api/damage-incidents/:id` | Update damage incident |
+| GET | `/api/damage-incidents/:id/attachments` | List damage incident attachments |
+| POST | `/api/damage-incidents/:id/attachments` | Upload damage incident images |
+| GET | `/api/damage-incidents/attachments/:attachmentId/content` | Get damage attachment content |
 | GET | `/api/goods-receipts/attachments/:attachmentId/content` | Get attachment image (binary) |
 | POST | `/api/goods-receipts/:id/attachments` | Upload goods receipt images |
 | GET | `/api/units` | List units (listings). Query: featured, city, limit, offset |
@@ -172,6 +179,55 @@ Base URL: `http://localhost:4000` (or your tunnel URL, e.g. `https://xxx.tryclou
 | bookingId | string | No | Required if referenceType is `booking`. |
 | damageIncidentId | string | No | Required if referenceType is `damage_incident`. |
 | notes | string | No | Optional notes. |
+
+---
+
+## Damage incidents
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/damage-incidents` | List damage incidents. Query: `unitId`, `bookingId`, `status`, `limit`, `offset`. |
+| POST | `/api/damage-incidents` | Create damage incident. |
+| GET | `/api/damage-incidents/:id` | Get one damage incident with unit/booking/users/attachments. |
+| PATCH | `/api/damage-incidents/:id` | Update damage incident. |
+| GET | `/api/damage-incidents/:id/attachments` | List attachments for a damage incident. |
+| POST | `/api/damage-incidents/:id/attachments` | Upload one or more image attachments. |
+| GET | `/api/damage-incidents/attachments/:attachmentId/content` | Open/redirect to image content URL. |
+
+**GET /api/damage-incidents** — Query:
+
+| Param | Type | Description |
+|-------|------|-------------|
+| unitId | string | Filter by unit ID. |
+| bookingId | string | Filter by booking ID. |
+| status | string | `open` \| `charged_to_guest` \| `absorbed` \| `settled`. |
+| limit | number | Max results (default 100, max 200). |
+| offset | number | Pagination offset (default 0). |
+
+**POST /api/damage-incidents** — Body (JSON):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| unitId | string | Yes | Unit/listing ID. |
+| description | string | Yes | Incident details. |
+| cost | number | Yes | Estimated total cost. |
+| bookingId | string | No | Related booking ID. |
+| reportedByUserId | string | No | Reporter user ID. |
+| resolvedByUserId | string | No | Resolver user ID. |
+| reportedAt | string | No | ISO datetime. |
+| resolvedAt | string | No | ISO datetime. |
+| resolutionNotes | string | No | Resolution notes. |
+| chargedToGuest | number | No | Amount charged to guest. |
+| absorbedAmount | number | No | Amount absorbed by business. |
+| status | string | No | `open` \| `charged_to_guest` \| `absorbed` \| `settled`. |
+
+**PATCH /api/damage-incidents/:id** — Body (JSON): same fields, all optional.
+
+**POST /api/damage-incidents/:id/attachments** — Body: `multipart/form-data`.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| files | file[] | Yes | Image files (JPG, PNG, WEBP). Max 8 files, 10 MB each. |
 
 ---
 

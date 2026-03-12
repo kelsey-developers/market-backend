@@ -16,6 +16,7 @@ export const openApiDocument = {
     { name: 'Suppliers' },
     { name: 'Inventory' },
     { name: 'Purchase Orders' },
+    { name: 'Damage Incidents' },
     { name: 'Goods Receipts' },
     { name: 'Units' },
     { name: 'Bookings' },
@@ -470,6 +471,126 @@ export const openApiDocument = {
           400: { description: 'Validation or business rule error' },
           404: { description: 'Purchase order not found' },
         },
+      },
+    },
+    '/api/damage-incidents': {
+      get: {
+        tags: ['Damage Incidents'],
+        summary: 'List damage incidents',
+        parameters: [
+          { name: 'unitId', in: 'query', schema: { type: 'string' } },
+          { name: 'bookingId', in: 'query', schema: { type: 'string' } },
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['open', 'charged_to_guest', 'absorbed', 'settled'] } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 100 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
+        ],
+        responses: { 200: { description: 'List of damage incidents' } },
+      },
+      post: {
+        tags: ['Damage Incidents'],
+        summary: 'Create damage incident',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['unitId', 'description', 'cost'],
+                properties: {
+                  bookingId: { type: 'string' },
+                  unitId: { type: 'string' },
+                  reportedByUserId: { type: 'string' },
+                  resolvedByUserId: { type: 'string' },
+                  reportedAt: { type: 'string', format: 'date-time' },
+                  resolvedAt: { type: 'string', format: 'date-time' },
+                  description: { type: 'string' },
+                  resolutionNotes: { type: 'string' },
+                  cost: { type: 'number' },
+                  chargedToGuest: { type: 'number' },
+                  absorbedAmount: { type: 'number' },
+                  status: { type: 'string', enum: ['open', 'charged_to_guest', 'absorbed', 'settled'] },
+                },
+              },
+            },
+          },
+        },
+        responses: { 201: { description: 'Damage incident created' }, 400: { description: 'Validation error' } },
+      },
+    },
+    '/api/damage-incidents/{id}': {
+      get: {
+        tags: ['Damage Incidents'],
+        summary: 'Get damage incident by ID',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Damage incident details' }, 404: { description: 'Not found' } },
+      },
+      patch: {
+        tags: ['Damage Incidents'],
+        summary: 'Update damage incident',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  bookingId: { type: 'string', nullable: true },
+                  unitId: { type: 'string' },
+                  reportedByUserId: { type: 'string', nullable: true },
+                  resolvedByUserId: { type: 'string', nullable: true },
+                  reportedAt: { type: 'string', format: 'date-time' },
+                  resolvedAt: { type: 'string', format: 'date-time', nullable: true },
+                  description: { type: 'string' },
+                  resolutionNotes: { type: 'string', nullable: true },
+                  cost: { type: 'number' },
+                  chargedToGuest: { type: 'number' },
+                  absorbedAmount: { type: 'number' },
+                  status: { type: 'string', enum: ['open', 'charged_to_guest', 'absorbed', 'settled'] },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: { description: 'Damage incident updated' }, 400: { description: 'Validation error' }, 404: { description: 'Not found' } },
+      },
+    },
+    '/api/damage-incidents/{id}/attachments': {
+      get: {
+        tags: ['Damage Incidents'],
+        summary: 'List damage incident attachments',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'List of attachments' }, 404: { description: 'Not found' } },
+      },
+      post: {
+        tags: ['Damage Incidents'],
+        summary: 'Upload damage incident images',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: {
+                type: 'object',
+                properties: {
+                  files: {
+                    type: 'array',
+                    items: { type: 'string', format: 'binary' },
+                  },
+                },
+                required: ['files'],
+              },
+            },
+          },
+        },
+        responses: { 201: { description: 'Attachments uploaded' }, 400: { description: 'Validation error' }, 404: { description: 'Damage incident not found' } },
+      },
+    },
+    '/api/damage-incidents/attachments/{attachmentId}/content': {
+      get: {
+        tags: ['Damage Incidents'],
+        summary: 'Get damage attachment content',
+        parameters: [{ name: 'attachmentId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { 302: { description: 'Redirects to attachment URL' }, 404: { description: 'Attachment not found' } },
       },
     },
     '/api/goods-receipts/{id}/attachments': {
