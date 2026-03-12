@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { getAuthServiceBaseUrl, tryProxyAuthService } from '../lib/authServiceProxy';
 import { prisma } from '../lib/prisma';
 import { requireAnyRole, requireAuth } from '../middleware/auth';
 
@@ -61,6 +62,127 @@ const parseCity = (location?: string | null): string | undefined => {
 
   const cityToken = parts.find((part) => /city/i.test(part));
   return cityToken ?? parts[parts.length - 1];
+};
+
+const EXTERNAL_SYNC_PROPERTY_NAME = 'External Sync Units';
+
+type ExternalUnit = {
+  id?: string;
+  title?: string;
+  description?: string;
+  price?: number | string;
+  location?: string;
+  city?: string;
+  property_type?: string;
+  is_featured?: boolean;
+  is_available?: boolean;
+  bedrooms?: number;
+};
+
+const normalizeExternalUnits = (payload: unknown): ExternalUnit[] => {
+  if (!Array.isArray(payload)) return [];
+  return payload.filter((row): row is ExternalUnit => !!row && typeof row === 'object');
+};
+
+const toPropertyType = (value?: string): 'apartment' | 'condominium' | 'penthouse' | 'house' | 'villa' | 'studio' => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'condominium') return 'condominium';
+  if (normalized === 'penthouse') return 'penthouse';
+  if (normalized === 'house') return 'house';
+  if (normalized === 'villa') return 'villa';
+  if (normalized === 'studio') return 'studio';
+  return 'apartment';
+};
+
+const syncExternalUnitsToLocal = async (units: ExternalUnit[]) => {
+  if (units.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    let property = await tx.property.findFirst({
+      where: { name: EXTERNAL_SYNC_PROPERTY_NAME },
+      select: { id: true },
+    });
+
+    if (!property) {
+      property = await tx.property.create({
+        data: {
+          name: EXTERNAL_SYNC_PROPERTY_NAME,
+          type: 'apartment',
+          location: 'Synced from external Auth Service',
+          isActive: true,
+        },
+        select: { id: true },
+      });
+    }
+
+    for (const row of units) {
+      const id = String(row.id || '').trim();
+      if (!id) continue;
+      const codeSuffix = id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'unit';
+      const title = String(row.title || '').trim() || `External Unit ${id.slice(0, 8)}`;
+      const location = String(row.location || '').trim();
+      const city = String(row.city || '').trim();
+
+      await tx.unit.upsert({
+        where: { id },
+        update: {
+          name: title,
+          code: `ext-${codeSuffix}`,
+          isActive: row.is_available !== false,
+          capacity: Math.max(1, Number(row.bedrooms || 1)),
+          nightlyRate: toNumber(row.price),
+          floorLabel: serializeUnitMeta({
+            status: row.is_available === false ? 'unavailable' : 'available',
+            isFeatured: row.is_featured === true,
+          }),
+        },
+        create: {
+          id,
+          propertyId: property.id,
+          code: `ext-${codeSuffix}`,
+          name: title,
+          capacity: Math.max(1, Number(row.bedrooms || 1)),
+          nightlyRate: toNumber(row.price),
+          isActive: row.is_available !== false,
+          floorLabel: serializeUnitMeta({
+            status: row.is_available === false ? 'unavailable' : 'available',
+            isFeatured: row.is_featured === true,
+          }),
+        },
+      });
+    }
+  });
+};
+
+const fetchExternalUnitsAndSync = async (req: { originalUrl: string; headers: Record<string, unknown> }) => {
+  const baseUrl = getAuthServiceBaseUrl();
+  const upstream = await fetch(`${baseUrl.replace(/\/+$/, '')}${req.originalUrl}`, {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      ...(typeof req.headers.authorization === 'string'
+        ? { authorization: req.headers.authorization }
+        : {}),
+      ...(process.env.AUTH_SERVICE_API_TOKEN
+        ? { authorization: process.env.AUTH_SERVICE_API_TOKEN }
+        : {}),
+    },
+  });
+
+  const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
+  const text = await upstream.text();
+  if (!upstream.ok) {
+    return { ok: false as const, status: upstream.status, contentType, body: text };
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    await syncExternalUnitsToLocal(normalizeExternalUnits(parsed));
+  } catch {
+    // keep response passthrough even if sync fails
+  }
+
+  return { ok: true as const, status: upstream.status, contentType, body: text };
 };
 
 const toNumber = (value: unknown): number => {
@@ -136,6 +258,16 @@ const toListingBase = (
 
 unitsRouter.get('/', async (req, res, next) => {
   try {
+    try {
+      const upstream = await fetchExternalUnitsAndSync(req);
+      res.status(upstream.status);
+      res.setHeader('Content-Type', upstream.contentType);
+      res.send(upstream.body);
+      return;
+    } catch {
+      // fallback to local list when external is not reachable
+    }
+
     const query = listUnitsQuerySchema.parse(req.query);
 
     const units = await prisma.unit.findMany({
@@ -166,8 +298,10 @@ unitsRouter.get('/', async (req, res, next) => {
   }
 });
 
-unitsRouter.get('/manage', requireAuth, requireAnyRole(['admin', 'agent']), async (_req, res, next) => {
+unitsRouter.get('/manage', requireAuth, requireAnyRole(['admin', 'agent']), async (req, res, next) => {
   try {
+    if (await tryProxyAuthService(req, res)) return;
+
     const units = await prisma.unit.findMany({
       include: {
         property: {
@@ -223,6 +357,8 @@ unitsRouter.get('/manage', requireAuth, requireAnyRole(['admin', 'agent']), asyn
 
 unitsRouter.get('/:id', async (req, res, next) => {
   try {
+    if (await tryProxyAuthService(req, res)) return;
+
     const unitId = String(req.params.id);
 
     const unit = await prisma.unit.findUnique({
@@ -251,6 +387,8 @@ unitsRouter.get('/:id', async (req, res, next) => {
 
 unitsRouter.patch('/:id', requireAuth, requireAnyRole(['admin', 'agent']), async (req, res, next) => {
   try {
+    if (await tryProxyAuthService(req, res)) return;
+
     const unitId = String(req.params.id);
     const payload = updateUnitSchema.parse(req.body);
 

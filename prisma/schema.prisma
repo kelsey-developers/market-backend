@@ -108,6 +108,14 @@ enum DamagePenaltyStatus {
   settled
 }
 
+enum ChargePricingModel {
+  PER_BOOKING
+  PER_NIGHT
+  PER_PERSON
+  PER_PERSON_PER_NIGHT
+  MANUAL
+}
+
 model User {
   id                           String               @id @default(cuid())
   email                        String               @unique
@@ -326,9 +334,26 @@ model Booking {
   stockMovements StockMovement[]
 }
 
+model ChargeType {
+  id            String            @id @default(cuid())
+  code          String            @unique
+  name          String
+  description   String?
+  defaultAmount Decimal?          @db.Decimal(12, 2)
+  pricingModel  ChargePricingModel @default(PER_BOOKING)
+  isActive      Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  bookingCharges BookingCharge[]
+
+  @@index([isActive, code])
+}
+
 model BookingCharge {
   id           String         @id @default(cuid())
   bookingId    String
+  chargeTypeId String?
   category     ChargeCategory
   name         String
   amount       Decimal        @db.Decimal(12, 2)
@@ -337,6 +362,10 @@ model BookingCharge {
   createdAt    DateTime       @default(now())
 
   booking      Booking        @relation(fields: [bookingId], references: [id])
+  chargeType   ChargeType?    @relation(fields: [chargeTypeId], references: [id])
+
+  @@index([bookingId])
+  @@index([chargeTypeId])
 }
 
 model Payment {

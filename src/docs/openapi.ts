@@ -55,6 +55,17 @@ export const openApiDocument = {
         },
       },
     },
+    '/health/external-sync': {
+      get: {
+        tags: ['Health'],
+        summary: 'Readiness (external Auth Service)',
+        description: 'Checks reachability of external Auth Service `/status` used for units/bookings sync.',
+        responses: {
+          200: { description: 'External sync service reachable' },
+          503: { description: 'External sync service unreachable' },
+        },
+      },
+    },
     '/api/product-categories': {
       get: {
         tags: ['Product Categories'],

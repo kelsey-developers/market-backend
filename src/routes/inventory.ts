@@ -81,8 +81,8 @@ const movementSchema = z.object({
 });
 
 const allocationSchema = z.object({
-  productId: z.string().min(1),
-  unitId: z.string().min(1),
+  productId: z.string().trim().min(1),
+  unitId: z.string().trim().min(1),
   quantityDelta: z.number().int(),
   minStock: z.number().int().min(0).optional(),
 });
@@ -206,6 +206,51 @@ const parseCity = (location?: string | null): string | undefined => {
 
   const cityToken = parts.find((part) => /city/i.test(part));
   return cityToken ?? parts[parts.length - 1];
+};
+
+const EXTERNAL_SYNC_PROPERTY_NAME = 'External Sync Units';
+
+const ensureLocalUnitForAllocation = async (
+  tx: Prisma.TransactionClient,
+  unitId: string
+) => {
+  const existing = await tx.unit.findUnique({
+    where: { id: unitId },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  let property = await tx.property.findFirst({
+    where: {
+      name: EXTERNAL_SYNC_PROPERTY_NAME,
+    },
+    select: { id: true },
+  });
+
+  if (!property) {
+    property = await tx.property.create({
+      data: {
+        name: EXTERNAL_SYNC_PROPERTY_NAME,
+        type: 'apartment',
+        location: 'Synced from external Auth Service',
+        isActive: true,
+      },
+      select: { id: true },
+    });
+  }
+
+  const codeSuffix = unitId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'unit';
+  await tx.unit.create({
+    data: {
+      id: unitId,
+      propertyId: property.id,
+      code: `ext-${codeSuffix}`,
+      name: `External Unit ${unitId.slice(0, 8)}`,
+      capacity: 1,
+      nightlyRate: new Prisma.Decimal(0),
+      isActive: true,
+    },
+  });
 };
 
 inventoryRouter.get('/', async (_req, res, next) => {
@@ -694,6 +739,7 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
 
     const unitItems = inventoryVisibleAllocations.map((allocation) => ({
       id: allocation.id,
+      productId: allocation.productId,
       name: allocation.product.name,
       type: toFrontendItemType(allocation.product.itemType),
       category: toFrontendCategory(allocation.product.category?.name),
@@ -803,41 +849,62 @@ inventoryRouter.post('/allocations', async (req, res, next) => {
   try {
     const payload = allocationSchema.parse(req.body);
 
-    const allocation = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const existing = await tx.inventoryAllocation.findUnique({
-        where: {
-          productId_unitId: {
+    const runAllocationWrite = async () =>
+      prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        await ensureLocalUnitForAllocation(tx, payload.unitId);
+
+        const existing = await tx.inventoryAllocation.findUnique({
+          where: {
+            productId_unitId: {
+              productId: payload.productId,
+              unitId: payload.unitId,
+            },
+          },
+        });
+
+        const currentQuantity = existing?.quantity ?? 0;
+        const nextQuantity = currentQuantity + payload.quantityDelta;
+        if (nextQuantity < 0) {
+          throw new Error('Insufficient allocation quantity for this unit');
+        }
+
+        return tx.inventoryAllocation.upsert({
+          where: {
+            productId_unitId: {
+              productId: payload.productId,
+              unitId: payload.unitId,
+            },
+          },
+          update: {
+            quantity: nextQuantity,
+            ...(payload.minStock !== undefined ? { minStock: payload.minStock } : {}),
+          },
+          create: {
             productId: payload.productId,
             unitId: payload.unitId,
+            quantity: Math.max(0, payload.quantityDelta),
+            minStock: payload.minStock ?? 0,
           },
-        },
+        });
       });
 
-      const currentQuantity = existing?.quantity ?? 0;
-      const nextQuantity = currentQuantity + payload.quantityDelta;
-      if (nextQuantity < 0) {
-        throw new Error('Insufficient allocation quantity for this unit');
+    let allocation;
+    try {
+      allocation = await runAllocationWrite();
+    } catch (error) {
+      // Retry once after explicitly materializing the unit outside transaction.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003'
+      ) {
+        await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          await ensureLocalUnitForAllocation(tx, payload.unitId);
+        });
+        allocation = await runAllocationWrite();
+      } else {
+        throw error;
       }
-
-      return tx.inventoryAllocation.upsert({
-        where: {
-          productId_unitId: {
-            productId: payload.productId,
-            unitId: payload.unitId,
-          },
-        },
-        update: {
-          quantity: nextQuantity,
-          ...(payload.minStock !== undefined ? { minStock: payload.minStock } : {}),
-        },
-        create: {
-          productId: payload.productId,
-          unitId: payload.unitId,
-          quantity: Math.max(0, payload.quantityDelta),
-          minStock: payload.minStock ?? 0,
-        },
-      });
-    });
+    }
 
     res.status(201).json(allocation);
   } catch (error) {

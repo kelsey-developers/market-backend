@@ -18,7 +18,9 @@
     "db:logs": "docker compose logs -f db",
     "db:init": "npm run db:up && npm run prisma:generate && npm run prisma:migrate -- --name init && npm run seed",
     "seed": "tsx prisma/seed.ts",
-    "tunnel": "node scripts/run-tunnel.mjs"
+    "tunnel": "node scripts/run-tunnel.mjs",
+    "db:bookings": "node scripts/check-bookings.mjs",
+    "db:booking-guests": "node scripts/check-booking-guests.mjs"
   },
   "repository": {
     "type": "git",

@@ -1,0 +1,9 @@
+{
+  "code": "CLEANING_FEE",
+  "name": "Cleaning fee",
+  "description": "Per stay",
+  "defaultAmount": 800,
+  "pricingModel": "PER_BOOKING",
+  "isActive": true
+}
+

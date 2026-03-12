@@ -32,6 +32,7 @@ import { suppliersRouter } from './routes/suppliers';
 import { unitsRouter } from './routes/units';
 import { bookingsRouter } from './routes/bookings';
 import { damageIncidentsRouter } from './routes/damageIncidents';
+import { chargeTypesRouter } from './routes/chargeTypes';
 
 dotenv.config();
 
@@ -82,6 +83,7 @@ app.use('/api/inventory', inventoryRouter);
 app.use('/api/purchase-orders', purchaseOrdersRouter);
 app.use('/api/goods-receipts', goodsReceiptsRouter);
 app.use('/api/damage-incidents', damageIncidentsRouter);
+app.use('/api/charge-types', chargeTypesRouter);
 app.use('/api/units', unitsRouter);
 app.use('/api/bookings', bookingsRouter);
 
