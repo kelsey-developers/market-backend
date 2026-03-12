@@ -485,6 +485,7 @@ model GoodsReceiptAttachment {
   fileName         String?
   mimeType         String?
   sizeBytes        Int?
+  fileData         Bytes?       @db.LongBlob
   uploadedByUserId String?
   createdAt        DateTime     @default(now())
 

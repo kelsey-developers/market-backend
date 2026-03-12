@@ -60,6 +60,43 @@ purchaseOrdersRouter.get('/', async (_req, res, next) => {
   }
 });
 
+purchaseOrdersRouter.get('/:id', async (req, res, next) => {
+  try {
+    const purchaseOrder = await prisma.purchaseOrder.findUnique({
+      where: { id: req.params.id },
+      include: {
+        supplier: true,
+        items: {
+          include: {
+            product: true,
+          },
+        },
+        receipts: {
+          include: {
+            warehouse: true,
+            items: {
+              include: {
+                product: true,
+                purchaseOrderItem: true,
+              },
+            },
+          },
+          orderBy: { receivedAt: 'desc' },
+        },
+      },
+    });
+
+    if (!purchaseOrder) {
+      res.status(404).json({ message: 'Purchase order not found' });
+      return;
+    }
+
+    res.json(purchaseOrder);
+  } catch (error) {
+    next(error);
+  }
+});
+
 purchaseOrdersRouter.post('/', async (req, res, next) => {
   try {
     const payload = createPurchaseOrderSchema.parse(req.body);

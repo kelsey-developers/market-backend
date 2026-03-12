@@ -93,6 +93,12 @@ const createWarehouseSchema = z.object({
   code: z.string().min(1).optional(),
 });
 
+const updateWarehouseSchema = z.object({
+  name: z.string().min(1).optional(),
+  location: z.string().optional(),
+  code: z.string().min(1).optional(),
+});
+
 const toNumber = (value: Prisma.Decimal | number | string | null | undefined) => {
   if (value == null) return 0;
   const parsed = Number(value);
@@ -276,6 +282,46 @@ inventoryRouter.post('/warehouses', async (req, res, next) => {
         location: created.location ?? '',
         capacity: undefined,
         createdAt: formatDate(created.createdAt),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+inventoryRouter.patch('/warehouses/:id', async (req, res, next) => {
+  try {
+    const payload = updateWarehouseSchema.parse(req.body);
+    if (Object.keys(payload).length === 0) {
+      res.status(400).json({ message: 'At least one field is required.' });
+      return;
+    }
+
+    const warehouseId = String(req.params.id || '').trim();
+    if (!warehouseId) {
+      res.status(400).json({ message: 'Warehouse ID is required.' });
+      return;
+    }
+
+    const nextCode = payload.code?.trim()
+      ? payload.code.trim().toUpperCase().replace(/[^A-Z0-9_-]+/g, '')
+      : undefined;
+
+    const updated = await prisma.warehouse.update({
+      where: { id: warehouseId },
+      data: {
+        ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
+        ...(payload.location !== undefined ? { location: payload.location.trim() || null } : {}),
+        ...(nextCode ? { code: nextCode } : {}),
+      },
+    });
+
+    res.json({
+      warehouse: {
+        id: updated.id,
+        name: updated.name,
+        location: updated.location ?? '',
+        createdAt: formatDate(updated.createdAt),
       },
     });
   } catch (error) {

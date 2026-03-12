@@ -71,7 +71,15 @@ Current Prisma models now cover:
 - Inventory + supply: `InventoryCategory`, `Product` (with `itemType` for consumable/non-consumable), `Supplier`, `Warehouse`, `InventoryBalance`, `StockMovement`, `PurchaseOrder`, `PurchaseOrderItem`, `InventoryAllocation`
 - Finance + sales report: `Property`, `Unit`, `Agent`, `Booking`, `BookingCharge`, `Payment`, `DamageIncident`
 
-## 7) Helpful Scripts
+## 7) API documentation (complete)
+
+All backend endpoints are documented.
+
+- **Swagger UI:** Open `http://localhost:4000/docs` in a browser (when the server is running). Try endpoints from the UI.
+- **OpenAPI JSON:** `GET http://localhost:4000/openapi.json` — use for Postman/Insomnia or codegen.
+- **Full reference (markdown):** [docs/API.md](docs/API.md) — every endpoint, request/response body, query params, and error codes.
+
+## 8) Helpful Scripts
 
 - `npm run db:status` to check MySQL container status
 - `npm run db:logs` to tail MySQL logs

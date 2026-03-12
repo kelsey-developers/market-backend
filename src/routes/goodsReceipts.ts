@@ -1,6 +1,3 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { randomUUID } from 'crypto';
 import multer from 'multer';
 import { Request, Router } from 'express';
 import { prisma } from '../lib/prisma';
@@ -10,7 +7,6 @@ export const goodsReceiptsRouter = Router();
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const MAX_FILES_PER_REQUEST = 8;
-const GOODS_RECEIPT_UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'goods-receipts');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -27,18 +23,55 @@ const upload = multer({
   },
 });
 
-const extensionFromMimeType = (mimeType: string) => {
-  if (mimeType === 'image/png') return 'png';
-  if (mimeType === 'image/webp') return 'webp';
-  return 'jpg';
-};
-
-const toPublicUrl = (req: Request, filename: string) => {
+const toAttachmentContentUrl = (req: Request, attachmentId: string) => {
   const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http');
   const host = req.get('host') || '';
-  const encoded = encodeURIComponent(filename).replace(/%2F/gi, '/');
-  return `${proto}://${host}/uploads/goods-receipts/${encoded}`;
+  return `${proto}://${host}/api/goods-receipts/attachments/${attachmentId}/content`;
 };
+
+goodsReceiptsRouter.get('/attachments/:attachmentId/content', async (req, res, next) => {
+  try {
+    const attachmentId = String(req.params.attachmentId || '').trim();
+    if (!attachmentId) {
+      res.status(400).json({ message: 'Attachment ID is required.' });
+      return;
+    }
+
+    const attachment = await prisma.goodsReceiptAttachment.findUnique({
+      where: { id: attachmentId },
+      select: {
+        fileData: true,
+        mimeType: true,
+        fileName: true,
+        fileUrl: true,
+      },
+    });
+
+    if (!attachment) {
+      res.status(404).json({ message: 'Attachment not found.' });
+      return;
+    }
+
+    if (!attachment.fileData) {
+      if (attachment.fileUrl) {
+        res.redirect(attachment.fileUrl);
+        return;
+      }
+      res.status(404).json({ message: 'Attachment file data not found.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    if (attachment.fileName) {
+      const safeFileName = encodeURIComponent(attachment.fileName);
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${safeFileName}`);
+    }
+    res.send(Buffer.from(attachment.fileData));
+  } catch (error) {
+    next(error);
+  }
+});
 
 goodsReceiptsRouter.post(
   '/:id/attachments',
@@ -67,28 +100,28 @@ goodsReceiptsRouter.post(
         return;
       }
 
-      await fs.mkdir(GOODS_RECEIPT_UPLOAD_DIR, { recursive: true });
-
       const uploadedByUserId = typeof req.headers['x-user-id'] === 'string'
         ? req.headers['x-user-id']
         : undefined;
 
       const created = await Promise.all(
         files.map(async (file) => {
-          const extension = extensionFromMimeType(file.mimetype);
-          const filename = `${goodsReceiptId}-${Date.now()}-${randomUUID()}.${extension}`;
-          const outputPath = path.join(GOODS_RECEIPT_UPLOAD_DIR, filename);
-          await fs.writeFile(outputPath, file.buffer);
-
-          return prisma.goodsReceiptAttachment.create({
+          const createdAttachment = await prisma.goodsReceiptAttachment.create({
             data: {
               goodsReceiptId,
-              fileUrl: toPublicUrl(req, filename),
+              fileUrl: 'pending',
               fileName: file.originalname,
               mimeType: file.mimetype,
               sizeBytes: file.size,
+              fileData: new Uint8Array(file.buffer),
               uploadedByUserId,
             },
+          });
+
+          const url = toAttachmentContentUrl(req, createdAttachment.id);
+          return prisma.goodsReceiptAttachment.update({
+            where: { id: createdAttachment.id },
+            data: { fileUrl: url },
           });
         })
       );

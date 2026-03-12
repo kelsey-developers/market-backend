@@ -1,10 +1,27 @@
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
+import swaggerUi from 'swagger-ui-express';
 import { Prisma } from '@prisma/client';
 import { ZodError } from 'zod';
 import { env } from './config/env';
+import { openApiDocument } from './docs/openapi';
+
+// Deep clone so Swagger UI gets a plain object (avoids any serialization/ref issues)
+const openApiSpec = JSON.parse(JSON.stringify(openApiDocument)) as typeof openApiDocument;
+
+// In development, write spec to disk so you can verify it (openapi-served.json in project root)
+if (process.env.NODE_ENV !== 'production') {
+  try {
+    const outPath = path.join(process.cwd(), 'openapi-served.json');
+    fs.writeFileSync(outPath, JSON.stringify(openApiSpec, null, 2));
+  } catch {
+    // ignore
+  }
+}
+
 import { healthRouter } from './routes/health';
 import { inventoryRouter } from './routes/inventory';
 import { goodsReceiptsRouter } from './routes/goodsReceipts';
@@ -30,6 +47,31 @@ app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 app.get('/', (_req, res) => {
   res.json({ message: 'market-backend is running' });
 });
+app.get('/openapi.json', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.json(openApiSpec);
+});
+// Debug: verify full spec (use /spec-meta — paths under /api or /docs are handled by other routes)
+app.get('/spec-meta', (_req, res) => {
+  const paths = Object.keys(openApiSpec.paths || {});
+  res.json({
+    pathCount: paths.length,
+    descriptionStarts: (openApiSpec.info?.description || '').slice(0, 60),
+    tags: openApiSpec.tags?.map((t) => t.name) || [],
+  });
+});
+// Swagger UI: load spec from URL so browser always fetches current /openapi.json
+app.use(
+  '/docs',
+  swaggerUi.serve,
+  swaggerUi.setup(null, {
+    swaggerOptions: {
+      url: '/openapi.json',
+      docExpansion: 'list',
+    },
+  })
+);
 
 app.use('/health', healthRouter);
 app.use('/api/product-categories', productCategoriesRouter);
