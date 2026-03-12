@@ -80,8 +80,17 @@ type ExternalUnit = {
 };
 
 const normalizeExternalUnits = (payload: unknown): ExternalUnit[] => {
-  if (!Array.isArray(payload)) return [];
-  return payload.filter((row): row is ExternalUnit => !!row && typeof row === 'object');
+  if (Array.isArray(payload)) {
+    return payload.filter((row): row is ExternalUnit => !!row && typeof row === 'object');
+  }
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const obj = payload as Record<string, unknown>;
+    const arr = (obj.data ?? obj.items ?? obj.units ?? obj.results) as unknown;
+    if (Array.isArray(arr)) {
+      return arr.filter((row): row is ExternalUnit => !!row && typeof row === 'object');
+    }
+  }
+  return [];
 };
 
 const toPropertyType = (value?: string): 'apartment' | 'condominium' | 'penthouse' | 'house' | 'villa' | 'studio' => {
@@ -95,7 +104,8 @@ const toPropertyType = (value?: string): 'apartment' | 'condominium' | 'penthous
 };
 
 const syncExternalUnitsToLocal = async (units: ExternalUnit[]) => {
-  if (units.length === 0) return;
+  const externalIds = new Set(units.map((u) => String(u.id || '').trim()).filter(Boolean));
+  if (externalIds.size === 0) return;
 
   await prisma.$transaction(async (tx) => {
     let property = await tx.property.findFirst({
@@ -151,8 +161,40 @@ const syncExternalUnitsToLocal = async (units: ExternalUnit[]) => {
         },
       });
     }
+
+    // Mark units that exist locally but are no longer in the external source as inactive
+    await tx.unit.updateMany({
+      where: {
+        propertyId: property.id,
+        id: { notIn: Array.from(externalIds) },
+        isActive: true,
+      },
+      data: { isActive: false },
+    });
   });
 };
+
+/** Sync units from external source. Call before building dataset so local DB reflects deletions. */
+export async function syncUnitsFromExternalSource(): Promise<void> {
+  const baseUrl = getAuthServiceBaseUrl();
+  if (!baseUrl.trim()) return;
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/units?limit=200&offset=0`, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        ...(process.env.AUTH_SERVICE_API_TOKEN
+          ? { authorization: process.env.AUTH_SERVICE_API_TOKEN }
+          : {}),
+      },
+    });
+    if (!res.ok) return;
+    const parsed = (await res.json()) as unknown;
+    await syncExternalUnitsToLocal(normalizeExternalUnits(parsed));
+  } catch {
+    // Non-fatal: external may be unreachable
+  }
+}
 
 const fetchExternalUnitsAndSync = async (req: { originalUrl: string; headers: Record<string, unknown> }) => {
   const baseUrl = getAuthServiceBaseUrl();

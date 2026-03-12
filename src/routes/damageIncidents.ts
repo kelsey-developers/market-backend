@@ -27,24 +27,36 @@ const upload = multer({
   },
 });
 
-const createDamageIncidentSchema = z.object({
-  bookingId: z.string().optional(),
-  unitId: z.string().min(1),
-  reportedByUserId: z.string().optional(),
-  resolvedByUserId: z.string().optional(),
-  reportedAt: z.coerce.date().optional(),
-  resolvedAt: z.coerce.date().optional(),
-  description: z.string().min(1),
-  resolutionNotes: z.string().optional(),
-  cost: z.number().nonnegative(),
-  chargedToGuest: z.number().nonnegative().optional(),
-  absorbedAmount: z.number().nonnegative().optional(),
-  status: z.enum(['open', 'charged_to_guest', 'absorbed', 'settled']).optional(),
-});
+const createDamageIncidentSchema = z
+  .object({
+    bookingId: z.string().optional(),
+    unitId: z.string().min(1).optional(),
+    warehouseId: z.string().min(1).optional(),
+    reportedByUserId: z.string().optional(),
+    resolvedByUserId: z.string().optional(),
+    reportedAt: z.coerce.date().optional(),
+    resolvedAt: z.coerce.date().optional(),
+    description: z.string().min(1),
+    resolutionNotes: z.string().optional(),
+    // Cost is required at the database level but optional in the API payload;
+    // default to 0 so callers don't have to calculate it upfront.
+    cost: z.number().nonnegative().optional().default(0),
+    chargedToGuest: z.number().nonnegative().optional(),
+    absorbedAmount: z.number().nonnegative().optional(),
+    status: z
+      .enum(['open', 'in-review', 'in_review', 'resolved', 'charged_to_guest', 'absorbed', 'settled'])
+      .optional()
+      .transform((v) => (v === 'in-review' ? 'in_review' : v)),
+  })
+  .refine((data) => !!data.unitId || !!data.warehouseId, {
+    message: 'Either unitId or warehouseId is required.',
+    path: ['unitId'],
+  });
 
 const updateDamageIncidentSchema = z.object({
   bookingId: z.string().nullable().optional(),
-  unitId: z.string().min(1).optional(),
+  unitId: z.string().min(1).nullable().optional(),
+  warehouseId: z.string().min(1).nullable().optional(),
   reportedByUserId: z.string().nullable().optional(),
   resolvedByUserId: z.string().nullable().optional(),
   reportedAt: z.coerce.date().optional(),
@@ -54,7 +66,10 @@ const updateDamageIncidentSchema = z.object({
   cost: z.number().nonnegative().optional(),
   chargedToGuest: z.number().nonnegative().optional(),
   absorbedAmount: z.number().nonnegative().optional(),
-  status: z.enum(['open', 'charged_to_guest', 'absorbed', 'settled']).optional(),
+  status: z
+    .enum(['open', 'in-review', 'in_review', 'resolved', 'charged_to_guest', 'absorbed', 'settled'])
+    .optional()
+    .transform((v) => (v === 'in-review' ? 'in_review' : v)),
 });
 
 const listDamageIncidentsQuerySchema = z.object({
@@ -91,7 +106,9 @@ damageIncidentsRouter.get('/', async (req, res, next) => {
         unit: true,
         reportedByUser: true,
         resolvedByUser: true,
-        attachments: {
+        attachments: { orderBy: { createdAt: 'desc' } },
+        stockMovements: {
+          include: { product: true, warehouse: true },
           orderBy: { createdAt: 'desc' },
         },
       },
@@ -100,7 +117,34 @@ damageIncidentsRouter.get('/', async (req, res, next) => {
       skip: query.offset,
     });
 
-    res.json({ damageIncidents: incidents });
+    type IncRow = (typeof incidents)[number] & {
+      stockMovements?: Array<{ id: string; productId: string; quantity: number }>;
+      reportedByUser?: { name?: string; email?: string };
+      unitId?: string | null;
+      warehouseId?: string | null;
+    };
+    const payload = incidents.map((inc) => {
+      const row = inc as IncRow;
+      const items = (row.stockMovements ?? []).map((m) => ({
+        id: m.id,
+        productId: m.productId,
+        unitId: row.unitId ?? undefined,
+        warehouseId: row.warehouseId ?? undefined,
+        quantity: Math.abs(m.quantity),
+        itemCost: undefined,
+      }));
+      const { stockMovements: _sm, ...rest } = inc;
+      return {
+        ...rest,
+        reportDate: inc.reportedAt,
+        dateReported: inc.reportedAt,
+        reportedBy: row.reportedByUser?.name ?? row.reportedByUser?.email ?? undefined,
+        warehouseId: row.warehouseId ?? undefined,
+        items,
+      };
+    });
+
+    res.json({ damageIncidents: payload });
   } catch (error) {
     next(error);
   }
@@ -112,18 +156,19 @@ damageIncidentsRouter.post('/', async (req, res, next) => {
     const incident = await prisma.damageIncident.create({
       data: {
         bookingId: payload.bookingId,
-        unitId: payload.unitId,
+        unitId: payload.unitId ?? undefined,
+        warehouseId: payload.warehouseId ?? undefined,
         reportedByUserId: payload.reportedByUserId,
         resolvedByUserId: payload.resolvedByUserId,
         reportedAt: payload.reportedAt,
         resolvedAt: payload.resolvedAt,
         description: payload.description,
         resolutionNotes: payload.resolutionNotes,
-        cost: payload.cost,
+        cost: payload.cost ?? 0,
         chargedToGuest: payload.chargedToGuest,
         absorbedAmount: payload.absorbedAmount,
-        status: payload.status,
-      },
+        status: payload.status as 'open' | 'charged_to_guest' | 'absorbed' | 'settled',
+      } as never,
       include: {
         booking: true,
         unit: true,
@@ -293,11 +338,14 @@ damageIncidentsRouter.get('/:id', async (req, res, next) => {
 damageIncidentsRouter.patch('/:id', async (req, res, next) => {
   try {
     const payload = updateDamageIncidentSchema.parse(req.body);
+    const hasWarehouse = payload.warehouseId !== undefined && payload.warehouseId !== null;
+    const hasUnit = payload.unitId !== undefined && payload.unitId !== null;
     const incident = await prisma.damageIncident.update({
       where: { id: req.params.id },
       data: {
         bookingId: payload.bookingId,
-        unitId: payload.unitId,
+        unitId: hasUnit ? payload.unitId! : hasWarehouse ? null : undefined,
+        warehouseId: hasWarehouse ? payload.warehouseId! : hasUnit ? null : undefined,
         reportedByUserId: payload.reportedByUserId,
         resolvedByUserId: payload.resolvedByUserId,
         reportedAt: payload.reportedAt,
@@ -307,8 +355,8 @@ damageIncidentsRouter.patch('/:id', async (req, res, next) => {
         cost: payload.cost,
         chargedToGuest: payload.chargedToGuest,
         absorbedAmount: payload.absorbedAmount,
-        status: payload.status,
-      },
+        status: payload.status as 'open' | 'charged_to_guest' | 'absorbed' | 'settled',
+      } as never,
       include: {
         booking: true,
         unit: true,

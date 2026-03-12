@@ -12,6 +12,7 @@ const ROLE_ALLOWED_PREFIXES: Record<string, string[]> = {
     '/suppliers',
     '/purchase-orders',
     '/goods-receipts',
+    '/damage-incidents',
   ],
   finance: ['/bookings', '/damage-incidents', '/charge-types'],
   housekeeping: [
@@ -80,7 +81,7 @@ export function roleGuard(req: Request, res: Response, next: NextFunction): void
 
   const messages: Record<string, string> = {
     inventory:
-      'Forbidden - inventory role can only access inventory, products, suppliers, purchase orders, and goods receipts',
+      'Forbidden - inventory role can only access inventory, products, suppliers, purchase orders, goods receipts, and damage incidents',
     finance:
       'Forbidden - finance role can only access bookings, damage incidents, and charge types',
     housekeeping:

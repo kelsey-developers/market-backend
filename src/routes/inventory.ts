@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { syncUnitsFromExternalSource } from './units';
 
 export const inventoryRouter = Router();
 
@@ -453,6 +454,7 @@ inventoryRouter.patch('/warehouses/:id', async (req, res, next) => {
 
 inventoryRouter.get('/dataset', async (req, res, next) => {
   try {
+    await syncUnitsFromExternalSource();
     const [warehouses, suppliers, products, balances, units, allocations, movements] = await Promise.all([
       prisma.warehouse.findMany({ orderBy: { name: 'asc' } }),
       prisma.supplier.findMany({ orderBy: { createdAt: 'desc' } }),
@@ -465,6 +467,7 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
         orderBy: { updatedAt: 'desc' },
       }),
       prisma.unit.findMany({
+        where: { isActive: true },
         include: { property: true },
         orderBy: { createdAt: 'desc' },
       }),
@@ -787,7 +790,15 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       receivedProductIds.has(allocation.productId)
     );
 
-    const unitsPayload = units.map((unit) => {
+    const EXTERNAL_SYNC_PROPERTY_NAME = 'External Sync Units';
+    const visibleUnits = units.filter((unit) => {
+      const propertyName = unit.property?.name ?? '';
+      const code = unit.code ?? '';
+      // Only expose units that come from the external sync source
+      return propertyName === EXTERNAL_SYNC_PROPERTY_NAME || code.startsWith('ext-');
+    });
+
+    const unitsPayload = visibleUnits.map((unit) => {
       const itemCount = inventoryVisibleAllocations.filter((allocation) => allocation.unitId === unit.id).length;
       const location = unit.property?.location ?? unit.property?.address ?? '';
 

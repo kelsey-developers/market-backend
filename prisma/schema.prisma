@@ -103,6 +103,8 @@ enum PaymentStatus {
 
 enum DamagePenaltyStatus {
   open
+  in_review
+  resolved
   charged_to_guest
   absorbed
   settled
@@ -146,16 +148,17 @@ model Supplier {
 }
 
 model Warehouse {
-  id            String             @id @default(cuid())
-  name          String
-  code          String             @unique
-  location      String?
-  isActive      Boolean            @default(true)
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  balances      InventoryBalance[]
-  movements     StockMovement[]
-  goodsReceipts GoodsReceipt[]
+  id              String            @id @default(cuid())
+  name            String
+  code            String            @unique
+  location        String?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime          @updatedAt
+  balances        InventoryBalance[]
+  movements       StockMovement[]
+  goodsReceipts   GoodsReceipt[]
+  damageIncidents DamageIncident[]
 }
 
 model InventoryCategory {
@@ -451,7 +454,8 @@ model UnitDateBlock {
 model DamageIncident {
   id              String               @id @default(cuid())
   bookingId       String?
-  unitId          String
+  unitId          String?
+  warehouseId     String?
   reportedByUserId String?
   resolvedByUserId String?
   reportedAt      DateTime             @default(now())
@@ -466,7 +470,8 @@ model DamageIncident {
   updatedAt       DateTime             @updatedAt
 
   booking         Booking?             @relation(fields: [bookingId], references: [id])
-  unit            Unit                 @relation(fields: [unitId], references: [id])
+  unit            Unit?                @relation(fields: [unitId], references: [id])
+  warehouse       Warehouse?           @relation(fields: [warehouseId], references: [id])
   reportedByUser  User?                @relation("DamageIncidentReporter", fields: [reportedByUserId], references: [id])
   resolvedByUser  User?                @relation("DamageIncidentResolver", fields: [resolvedByUserId], references: [id])
   attachments     DamageAttachment[]
