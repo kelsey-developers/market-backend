@@ -586,6 +586,16 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       }))
     );
 
+    // Business rule: products are considered inventory-visible only after at least one goods receipt.
+    const receivedProductIds = new Set<string>();
+    purchaseOrders.forEach((purchaseOrder: any) => {
+      purchaseOrder.receipts.forEach((receipt: any) => {
+        receipt.items.forEach((item: any) => {
+          if (item?.productId) receivedProductIds.add(item.productId);
+        });
+      });
+    });
+
     const latestPurchaseOrderByProductId = new Map<
       string,
       { purchaseOrder: (typeof purchaseOrdersPayload)[number]; unitCost: number }
@@ -603,7 +613,9 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       });
     });
 
-    const replenishmentItems = products.map((product) => {
+    const inventoryVisibleProducts = products.filter((product) => receivedProductIds.has(product.id));
+
+    const replenishmentItems = inventoryVisibleProducts.map((product) => {
       const productBalances = balances.filter((entry) => entry.productId === product.id);
       const totalStock = productBalances.reduce((sum, entry) => sum + entry.quantity, 0);
       const primaryBalance = [...productBalances].sort((a, b) => b.quantity - a.quantity)[0];
@@ -648,8 +660,12 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       String(req.query.includeMeta ?? '').toLowerCase() === 'true' ||
       String(req.query.v ?? '') === '2';
 
+    const inventoryVisibleAllocations = allocations.filter((allocation) =>
+      receivedProductIds.has(allocation.productId)
+    );
+
     const unitsPayload = units.map((unit) => {
-      const itemCount = allocations.filter((allocation) => allocation.unitId === unit.id).length;
+      const itemCount = inventoryVisibleAllocations.filter((allocation) => allocation.unitId === unit.id).length;
       const location = unit.property?.location ?? unit.property?.address ?? '';
 
       const basePayload = {
@@ -676,7 +692,7 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       };
     });
 
-    const unitItems = allocations.map((allocation) => ({
+    const unitItems = inventoryVisibleAllocations.map((allocation) => ({
       id: allocation.id,
       name: allocation.product.name,
       type: toFrontendItemType(allocation.product.itemType),
