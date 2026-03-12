@@ -20,6 +20,7 @@ export const openApiDocument = {
     { name: 'Goods Receipts' },
     { name: 'Units' },
     { name: 'Bookings' },
+    { name: 'Add-ons' },
   ],
   paths: {
     '/': {
@@ -755,6 +756,77 @@ export const openApiDocument = {
         summary: 'Get booking by ID',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: { 200: { description: 'Booking details' }, 404: { description: 'Not found' } },
+      },
+    },
+    '/api/bookings/{id}/charges/bulk': {
+      post: {
+        tags: ['Bookings', 'Add-ons'],
+        summary: 'Add multiple add-on charges to a booking',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Booking ID or reference code' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['items'],
+                properties: {
+                  items: {
+                    type: 'array',
+                    minItems: 1,
+                    items: {
+                      type: 'object',
+                      properties: {
+                        chargeTypeCode: { type: 'string', example: 'CLEANING_FEE' },
+                        chargeTypeId: { type: 'string' },
+                        quantity: { type: 'integer', default: 1 },
+                        amount: { type: 'number' },
+                        notes: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: { 201: { description: 'Add-ons added' }, 400: { description: 'Validation error' }, 404: { description: 'Booking not found' } },
+      },
+    },
+    '/api/addon-requests': {
+      post: {
+        tags: ['Add-ons'],
+        summary: 'Submit requested add-ons in bulk (college/external)',
+        description: 'Post multiple add-on items for a booking in one request. Use chargeTypeCode (e.g. CLEANING_FEE) or chargeTypeId.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['bookingId', 'items'],
+                properties: {
+                  bookingId: { type: 'string', description: 'Booking ID or reference code' },
+                  items: {
+                    type: 'array',
+                    minItems: 1,
+                    items: {
+                      type: 'object',
+                      properties: {
+                        chargeTypeCode: { type: 'string', example: 'CLEANING_FEE' },
+                        chargeTypeId: { type: 'string' },
+                        quantity: { type: 'integer', default: 1 },
+                        amount: { type: 'number' },
+                        notes: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: { 201: { description: 'Add-ons received and added' }, 400: { description: 'Validation error' }, 404: { description: 'Booking not found' } },
       },
     },
   },

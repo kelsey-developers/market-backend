@@ -47,8 +47,10 @@ Base URL: `http://localhost:4000` (or your tunnel URL, e.g. `https://xxx.tryclou
 | GET | `/api/units/manage` | List units (auth: admin/agent) |
 | GET | `/api/units/:id` | Get unit by ID |
 | PATCH | `/api/units/:id` | Update unit (auth: admin/agent) |
+| POST | `/api/addon-requests` | Submit requested add-ons in bulk (college/external) |
 | GET | `/api/bookings` | List bookings for a listing. Query: listingId (required) |
 | POST | `/api/bookings` | Create booking |
+| POST | `/api/bookings/:id/charges/bulk` | Add multiple add-on charges to a booking |
 | GET | `/api/bookings/my` | Current user's bookings (auth: admin/agent) |
 | GET | `/api/bookings/:id` | Get booking by ID |
 
@@ -317,12 +319,67 @@ Response (201): `{ attachments: [{ id, url, fileName, mimeType, sizeBytes, creat
 
 ---
 
+## Add-on requests (bulk)
+
+For college/external systems to submit requested add-ons in one request.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/addon-requests` | Submit multiple add-on items for a booking. |
+| POST | `/api/bookings/:id/charges/bulk` | Same, with booking ID in path. |
+
+**POST /api/addon-requests** — Body (JSON):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| bookingId | string | Yes | Booking ID or reference code. |
+| items | array | Yes | Array of add-on items (min 1). |
+
+**Each item:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| chargeTypeCode | string | One of code/id | Charge type code (e.g. `CLEANING_FEE`). |
+| chargeTypeId | string | One of code/id | Charge type ID (alternative to code). |
+| quantity | number | No | Default 1. |
+| amount | number | No | Override default amount from charge type. |
+| notes | string | No | Optional notes (max 500 chars). |
+
+**Example:**
+
+```json
+{
+  "bookingId": "BKG-ABC123",
+  "items": [
+    { "chargeTypeCode": "CLEANING_FEE", "quantity": 1 },
+    { "chargeTypeCode": "LATE_CHECKOUT", "quantity": 1, "amount": 500 }
+  ]
+}
+```
+
+**Response (201):**
+
+```json
+{
+  "message": "3 add-on(s) received and added.",
+  "count": 3,
+  "charges": [
+    { "id": "...", "chargeTypeId": "...", "name": "Cleaning fee", "amount": 800, "quantity": 1, "notes": null }
+  ]
+}
+```
+
+**Errors:** 400 (invalid charge type, missing amount), 404 (booking not found).
+
+---
+
 ## Bookings
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/bookings` | List bookings for a listing. **Query:** `listingId` (required). |
 | POST | `/api/bookings` | Create booking. |
+| POST | `/api/bookings/:id/charges/bulk` | Add multiple add-on charges (body: `{ items: [...] }`). |
 | GET | `/api/bookings/my` | Current user's bookings (auth: admin/agent). |
 | GET | `/api/bookings/:id` | Get one booking by ID. |
 

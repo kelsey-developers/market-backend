@@ -34,6 +34,10 @@ import { bookingsRouter } from './routes/bookings';
 import { damageIncidentsRouter } from './routes/damageIncidents';
 import { chargeTypesRouter } from './routes/chargeTypes';
 import { userRolesRouter } from './routes/userRoles';
+import { addonRequestsRouter } from './routes/addonRequests';
+import { inventorySettingsRouter } from './routes/inventorySettings';
+import { approvalRequestsRouter } from './routes/approvalRequests';
+import { roleGuard } from './middleware/roleGuard';
 
 dotenv.config();
 
@@ -46,6 +50,9 @@ app.use(
 );
 app.use(express.json());
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+
+// Apply role guard for /api/* — inventory, finance, housekeeping are restricted to their paths
+app.use('/api', roleGuard);
 
 app.get('/', (_req, res) => {
   res.json({ message: 'market-backend is running' });
@@ -85,9 +92,12 @@ app.use('/api/purchase-orders', purchaseOrdersRouter);
 app.use('/api/goods-receipts', goodsReceiptsRouter);
 app.use('/api/damage-incidents', damageIncidentsRouter);
 app.use('/api/charge-types', chargeTypesRouter);
+app.use('/api/addon-requests', addonRequestsRouter);
 app.use('/api/units', unitsRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/user-roles', userRolesRouter);
+app.use('/api/inventory-settings', inventorySettingsRouter);
+app.use('/api/approval-requests', approvalRequestsRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ message: 'API route not found' });

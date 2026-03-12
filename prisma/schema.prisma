@@ -567,3 +567,30 @@ model InventoryAllocation {
 
   @@unique([productId, unitId])
 }
+
+model InventorySetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+model ApprovalRequest {
+  id            String   @id @default(cuid())
+  kind          String
+  status        String   @default("pending")
+  risk          String   @default("medium")
+  referenceType String?
+  referenceId   String?
+  itemName      String
+  quantity      Int
+  reason        String?
+  requestedBy   String?
+  requestedAt   DateTime @default(now())
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([status])
+  @@index([referenceType, referenceId])
+}

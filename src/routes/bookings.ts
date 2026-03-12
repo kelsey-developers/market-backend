@@ -829,6 +829,133 @@ bookingsRouter.get('/my', requireAuth, requireAnyRole(['admin', 'agent']), async
   }
 });
 
+/**
+ * Schema for bulk add-on charges.
+ * Items can use chargeTypeCode (e.g. "CLEANING_FEE") or chargeTypeId.
+ */
+const bulkAddChargesSchema = z.object({
+  items: z.array(
+    z.object({
+      chargeTypeCode: z.string().min(1).optional(),
+      chargeTypeId: z.string().min(1).optional(),
+      quantity: z.number().int().positive().default(1),
+      amount: z.number().nonnegative().optional(),
+      notes: z.string().max(500).optional(),
+    })
+  ).min(1, 'At least one item is required'),
+}).refine((data) => data.items.every((i) => i.chargeTypeCode || i.chargeTypeId), {
+  message: 'Each item must have chargeTypeCode or chargeTypeId',
+  path: ['items'],
+});
+
+async function processBulkAddCharges(
+  bookingIdOrCode: string,
+  items: z.infer<typeof bulkAddChargesSchema>['items']
+) {
+  const booking = await prisma.booking.findFirst({
+    where: { OR: [{ id: bookingIdOrCode }, { bookingCode: bookingIdOrCode }] },
+    select: { id: true },
+  });
+  if (!booking) return { error: 'Booking not found.', status: 404 as const };
+
+  const chargeTypes = await prisma.chargeType.findMany({
+    where: { isActive: true },
+    select: { id: true, code: true, name: true, defaultAmount: true },
+  });
+  const byId = new Map(chargeTypes.map((c) => [c.id, c]));
+  const byCode = new Map(chargeTypes.map((c) => [c.code.toUpperCase(), c]));
+
+  const toCreate: Array<{
+    bookingId: string;
+    chargeTypeId: string;
+    category: 'addon';
+    name: string;
+    amount: number;
+    quantity: number;
+    notes: string | null;
+  }> = [];
+
+  for (const item of items) {
+    const ct = item.chargeTypeId
+      ? byId.get(item.chargeTypeId)
+      : item.chargeTypeCode
+        ? byCode.get(item.chargeTypeCode.trim().toUpperCase())
+        : null;
+
+    if (!ct) {
+      const hint = item.chargeTypeCode || item.chargeTypeId;
+      return {
+        error: `Charge type not found or inactive: ${hint}`,
+        availableCodes: chargeTypes.map((c) => c.code),
+        status: 400 as const,
+      };
+    }
+
+    const defaultAmount = ct.defaultAmount ? Number(ct.defaultAmount) : 0;
+    const amount = item.amount ?? defaultAmount;
+    if (!Number.isFinite(amount) || amount < 0) {
+      return {
+        error: `Invalid amount for ${ct.code}. Provide amount or ensure charge type has defaultAmount.`,
+        status: 400 as const,
+      };
+    }
+
+    toCreate.push({
+      bookingId: booking.id,
+      chargeTypeId: ct.id,
+      category: 'addon',
+      name: ct.name,
+      amount,
+      quantity: item.quantity,
+      notes: item.notes?.trim() || null,
+    });
+  }
+
+  const created = await prisma.bookingCharge.createMany({ data: toCreate });
+  const charges = await prisma.bookingCharge.findMany({
+    where: { bookingId: booking.id },
+    orderBy: { createdAt: 'desc' },
+    take: toCreate.length,
+  });
+
+  return {
+    count: created.count,
+    charges: charges.map((c) => ({
+      id: c.id,
+      chargeTypeId: c.chargeTypeId,
+      name: c.name,
+      amount: Number(c.amount),
+      quantity: c.quantity,
+      notes: c.notes,
+    })),
+  };
+}
+
+/** POST /api/bookings/:id/charges/bulk — add add-ons by booking ID in path */
+bookingsRouter.post('/:id/charges/bulk', async (req, res, next) => {
+  try {
+    const bookingId = String(req.params.id || '').trim();
+    if (!bookingId) {
+      return res.status(400).json({ message: 'Booking ID is required.' });
+    }
+    const payload = bulkAddChargesSchema.parse(req.body);
+    const result = await processBulkAddCharges(bookingId, payload.items);
+    if ('error' in result) {
+      const status = result.status ?? 400;
+      return res.status(status).json(
+        status === 404 ? { message: result.error } : { message: result.error, ...(result as { availableCodes?: string[] }) }
+      );
+    }
+    res.status(201).json({
+      message: `${result.count} add-on(s) added.`,
+      count: result.count,
+      charges: result.charges,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 bookingsRouter.get('/:id', async (req, res, next) => {
   try {
     try {
