@@ -202,7 +202,22 @@ damageIncidentsRouter.get('/attachments/:attachmentId/content', async (req, res,
       return res.status(404).json({ message: 'Attachment not found.' });
     }
 
-    return res.redirect(attachment.fileUrl);
+    const stored = attachment.fileUrl;
+    let targetUrl = stored;
+
+    // Normalize legacy file-system style paths (e.g. "C:\\repo\\uploads\\damage-incidents\\file.png")
+    // so they always redirect through the HTTP /uploads/* URL on this backend.
+    const looksLikeFsPath =
+      /^[a-zA-Z]:[\\/]/.test(stored) || // Windows "C:\path"
+      stored.startsWith('//') || // UNC-style
+      stored.startsWith('/'); // Unix-style absolute path
+
+    if (looksLikeFsPath) {
+      const fileName = path.basename(stored);
+      targetUrl = toAttachmentUrl(req, fileName);
+    }
+
+    return res.redirect(targetUrl);
   } catch (error) {
     next(error);
   }
