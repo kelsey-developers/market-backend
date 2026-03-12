@@ -279,7 +279,14 @@ unitsRouter.get('/', async (req, res, next) => {
 
     let listings = units
       .map((unit) => toListingBase(unit))
-      .filter((row) => row.is_available === true);
+      .filter((row) => {
+        if (!row.is_available) return false;
+        // Exclude placeholder units auto-created for FK integrity
+        // (they have generic names like "External Unit xxxxxxxx" and price 0)
+        const title = String(row.title ?? '');
+        if (/^External Unit /i.test(title) && Number(row.price) === 0) return false;
+        return true;
+      });
 
     if (query.featured) {
       const featured = query.featured === 'true';

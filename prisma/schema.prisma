@@ -150,6 +150,7 @@ model Warehouse {
   name          String
   code          String             @unique
   location      String?
+  isActive      Boolean            @default(true)
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
   balances      InventoryBalance[]

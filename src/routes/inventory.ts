@@ -88,15 +88,17 @@ const allocationSchema = z.object({
 });
 
 const createWarehouseSchema = z.object({
-  name: z.string().min(1),
+  name:     z.string().min(1),
   location: z.string().optional(),
-  code: z.string().min(1).optional(),
+  code:     z.string().min(1).optional(),
+  isActive: z.boolean().optional(),
 });
 
 const updateWarehouseSchema = z.object({
-  name: z.string().min(1).optional(),
+  name:     z.string().min(1).optional(),
   location: z.string().optional(),
-  code: z.string().min(1).optional(),
+  code:     z.string().min(1).optional(),
+  isActive: z.boolean().optional(),
 });
 
 const toNumber = (value: Prisma.Decimal | number | string | null | undefined) => {
@@ -288,6 +290,76 @@ inventoryRouter.get('/', async (_req, res, next) => {
   }
 });
 
+/**
+ * GET /api/inventory/warehouses
+ * List all warehouses with their active status.
+ * Query: ?activeOnly=true   — return only active warehouses
+ */
+inventoryRouter.get('/warehouses', async (req, res, next) => {
+  try {
+    const activeOnly = req.query.activeOnly === 'true';
+    const warehouses = await prisma.warehouse.findMany({
+      where: activeOnly ? ({ isActive: true } as Prisma.WarehouseWhereInput) : undefined,
+      orderBy: { name: 'asc' },
+    });
+
+    res.json({
+      warehouses: warehouses.map((w) => ({
+        id:        w.id,
+        code:      w.code,
+        name:      w.name,
+        location:  w.location ?? '',
+        isActive:  (w as unknown as { isActive: boolean }).isActive,
+        createdAt: formatDate(w.createdAt),
+        updatedAt: formatDate(w.updatedAt),
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /api/inventory/warehouses/:id/status
+ * Toggle or set the active status of a warehouse.
+ * Body: { isActive: boolean }
+ */
+inventoryRouter.patch('/warehouses/:id/status', async (req, res, next) => {
+  try {
+    const warehouseId = String(req.params.id || '').trim();
+    if (!warehouseId) {
+      return res.status(400).json({ message: 'Warehouse ID is required.' });
+    }
+
+    const { isActive } = z.object({ isActive: z.boolean() }).parse(req.body);
+
+    const existing = await prisma.warehouse.findUnique({
+      where: { id: warehouseId },
+      select: { id: true, isActive: true } as unknown as Prisma.WarehouseSelect,
+    });
+    if (!existing) {
+      return res.status(404).json({ message: 'Warehouse not found.' });
+    }
+
+    const updated = await prisma.warehouse.update({
+      where: { id: warehouseId },
+      data: { isActive } as unknown as Prisma.WarehouseUpdateInput,
+    });
+
+    res.json({
+      warehouse: {
+        id:       updated.id,
+        code:     updated.code,
+        name:     updated.name,
+        location: updated.location ?? '',
+        isActive: (updated as unknown as { isActive: boolean }).isActive,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 inventoryRouter.post('/warehouses', async (req, res, next) => {
   try {
     const payload = createWarehouseSchema.parse(req.body);
@@ -317,15 +389,17 @@ inventoryRouter.post('/warehouses', async (req, res, next) => {
         code,
         name: payload.name.trim(),
         location: payload.location?.trim() || null,
-      },
+        isActive: payload.isActive ?? true,
+      } as unknown as Prisma.WarehouseCreateInput,
     });
 
     res.status(201).json({
       warehouse: {
         id: created.id,
+        code: created.code,
         name: created.name,
         location: created.location ?? '',
-        capacity: undefined,
+        isActive: (created as unknown as { isActive: boolean }).isActive,
         createdAt: formatDate(created.createdAt),
       },
     });
@@ -358,14 +432,17 @@ inventoryRouter.patch('/warehouses/:id', async (req, res, next) => {
         ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
         ...(payload.location !== undefined ? { location: payload.location.trim() || null } : {}),
         ...(nextCode ? { code: nextCode } : {}),
-      },
+        ...(payload.isActive !== undefined ? { isActive: payload.isActive } : {}),
+      } as unknown as Prisma.WarehouseUpdateInput,
     });
 
     res.json({
       warehouse: {
         id: updated.id,
+        code: updated.code,
         name: updated.name,
         location: updated.location ?? '',
+        isActive: (updated as unknown as { isActive: boolean }).isActive,
         createdAt: formatDate(updated.createdAt),
       },
     });
@@ -568,10 +645,11 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
 
       return {
         id: warehouse.id,
+        code: warehouse.code,
         name: warehouse.name,
         location: warehouse.location ?? '',
         description: `Code: ${warehouse.code}`,
-        isActive: true,
+        isActive: (warehouse as unknown as { isActive: boolean }).isActive,
         inventoryBalances,
         stockMovements: warehouseMovements,
       };

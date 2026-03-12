@@ -33,6 +33,7 @@ import { unitsRouter } from './routes/units';
 import { bookingsRouter } from './routes/bookings';
 import { damageIncidentsRouter } from './routes/damageIncidents';
 import { chargeTypesRouter } from './routes/chargeTypes';
+import { userRolesRouter } from './routes/userRoles';
 
 dotenv.config();
 
@@ -86,6 +87,7 @@ app.use('/api/damage-incidents', damageIncidentsRouter);
 app.use('/api/charge-types', chargeTypesRouter);
 app.use('/api/units', unitsRouter);
 app.use('/api/bookings', bookingsRouter);
+app.use('/api/user-roles', userRolesRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ message: 'API route not found' });
