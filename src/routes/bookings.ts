@@ -1,9 +1,10 @@
 import { BookingStatus, PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
-import { Router } from 'express';
+import { Request, Response, Router } from 'express';
+import type { NextFunction } from 'express';
 import { z } from 'zod';
 import { getAuthServiceBaseUrl } from '../lib/authServiceProxy';
 import { prisma } from '../lib/prisma';
-import { requireAnyRole, requireAuth } from '../middleware/auth';
+import { optionalAuth, requireAnyRole, requireAuth } from '../middleware/auth';
 
 export const bookingsRouter = Router();
 
@@ -735,33 +736,26 @@ bookingsRouter.post('/', async (req, res, next) => {
   }
 });
 
-bookingsRouter.get('/my', requireAuth, requireAnyRole(['admin', 'agent']), async (req, res, next) => {
+bookingsRouter.get('/my', optionalAuth, async (req, res, next) => {
   try {
-    try {
-      const upstream = await fetchExternalBookingsAndSync(req);
-      res.status(upstream.status);
-      res.setHeader('Content-Type', upstream.contentType);
-      res.send(upstream.bodyText);
-      return;
-    } catch {
-      // fallback to local when external is unreachable
-    }
-
-    const auth = req.auth!;
+    // Always return local DB bookings so admin and finance get consistent data (unit, dates, guest, base price, add-ons).
+    // optionalAuth: no 401/403 — return all bookings when unauthenticated, filter by agent when authenticated as agent.
+    const auth = req.auth ?? { roles: [], userId: undefined, email: undefined };
     const isAdmin = auth.roles.includes('admin');
+    const isFinance = auth.roles.includes('finance');
+    const noRole = auth.roles.length === 0;
+    const isAgentOnly = auth.roles.includes('agent') && !isAdmin && !isFinance;
 
-    if (!isAdmin && !auth.userId && !auth.email) {
-      return res.status(403).json({ message: 'Forbidden - agent identity is required' });
-    }
-
-    const where = isAdmin
-      ? {}
-      : {
-          OR: [
-            ...(auth.userId ? [{ agentId: auth.userId }] : []),
-            ...(auth.email ? [{ agent: { email: auth.email } }] : []),
-          ],
-        };
+    // Admin, finance, or no role → all bookings. Agent-only → filter by agent id/email when present.
+    const where =
+      isAgentOnly && (auth.userId || auth.email)
+        ? {
+            OR: [
+              ...(auth.userId ? [{ agentId: auth.userId }] : []),
+              ...(auth.email ? [{ agent: { email: auth.email } }] : []),
+            ],
+          }
+        : {};
 
     const bookings = await prisma.booking.findMany({
       where,

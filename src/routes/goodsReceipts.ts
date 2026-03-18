@@ -1,6 +1,8 @@
 import multer from 'multer';
 import { Request, Router } from 'express';
 import { prisma } from '../lib/prisma';
+import { resolveRequestUserId } from '../lib/requestUser';
+import { optionalAuth } from '../middleware/auth';
 
 export const goodsReceiptsRouter = Router();
 
@@ -75,6 +77,7 @@ goodsReceiptsRouter.get('/attachments/:attachmentId/content', async (req, res, n
 
 goodsReceiptsRouter.post(
   '/:id/attachments',
+  optionalAuth,
   upload.array('files', MAX_FILES_PER_REQUEST),
   async (req, res, next) => {
     try {
@@ -100,9 +103,7 @@ goodsReceiptsRouter.post(
         return;
       }
 
-      const uploadedByUserId = typeof req.headers['x-user-id'] === 'string'
-        ? req.headers['x-user-id']
-        : undefined;
+      const uploadedByUserId = await resolveRequestUserId(req);
 
       const created = await Promise.all(
         files.map(async (file) => {

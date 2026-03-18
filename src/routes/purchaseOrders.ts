@@ -2,6 +2,8 @@ import { Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { resolveRequestUserId } from '../lib/requestUser';
+import { optionalAuth } from '../middleware/auth';
 
 export const purchaseOrdersRouter = Router();
 
@@ -74,6 +76,7 @@ purchaseOrdersRouter.get('/:id', async (req, res, next) => {
         receipts: {
           include: {
             warehouse: true,
+            receivedByUser: true,
             items: {
               include: {
                 product: true,
@@ -128,10 +131,11 @@ purchaseOrdersRouter.post('/', async (req, res, next) => {
   }
 });
 
-purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
+purchaseOrdersRouter.post('/:id/receive', optionalAuth, async (req, res, next) => {
   try {
     const payload = receivePurchaseOrderSchema.parse(req.body);
-    const purchaseOrderId = req.params.id;
+    const purchaseOrderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const receivedByUserId = (await resolveRequestUserId(req)) ?? payload.receivedByUserId ?? undefined;
 
     const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
@@ -148,7 +152,7 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
           receiptNo: `GR-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           purchaseOrderId,
           warehouseId: payload.warehouseId,
-          receivedByUserId: payload.receivedByUserId,
+          receivedByUserId,
           notes: payload.notes,
         },
       });
@@ -262,9 +266,20 @@ purchaseOrdersRouter.post('/:id/receive', async (req, res, next) => {
         },
       });
 
+      if (!createdReceipt) {
+        throw new Error('Goods receipt not found after create');
+      }
+
       return {
         purchaseOrder: updatedPurchaseOrder,
-        goodsReceipt: createdReceipt,
+        goodsReceipt: {
+          ...createdReceipt,
+          receivedBy:
+            createdReceipt.receivedByUser?.name ??
+            createdReceipt.receivedByUser?.email ??
+            createdReceipt.receivedByUserId ??
+            undefined,
+        },
       };
     });
 

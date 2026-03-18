@@ -69,13 +69,21 @@ function isAllowedPath(path: string, role: string): boolean {
  * to their allowed API paths. Block all others with 403.
  */
 export function roleGuard(req: Request, res: Response, next: NextFunction): void {
+  // Normalize path to be relative to /api so it matches ROLE_ALLOWED_PREFIXES
+  const raw = (req.originalUrl || req.url || req.path || '').split('?')[0] || '';
+  const pathUnderApi = (raw.replace(/^\/api\/?/i, '') || '/').replace(/^\/?/, '/');
+
+  // Always allow /bookings so finance dashboard and admin get booking-linked data without 403
+  if (pathUnderApi.startsWith('/bookings')) {
+    return next();
+  }
+
   const role = getRestrictedRole(req);
   if (!role) {
     return next();
   }
 
-  const path = req.path || req.url?.split('?')[0] || '';
-  if (isAllowedPath(path, role)) {
+  if (isAllowedPath(pathUnderApi, role)) {
     return next();
   }
 

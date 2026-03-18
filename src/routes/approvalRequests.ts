@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { getDisplayNamesForUserIds, getRequestIdentity, resolveRequestUserId } from '../lib/requestUser';
+import { optionalAuth } from '../middleware/auth';
 
 export const approvalRequestsRouter = Router();
 
@@ -74,6 +76,8 @@ approvalRequestsRouter.get('/', async (req, res, next) => {
       reviewedAt: null,
     }));
 
+    const userIds = [...new Set(dbRequests.flatMap((r) => [r.requestedBy, r.reviewedBy].filter(Boolean) as string[]))];
+    const displayNames = await getDisplayNamesForUserIds(userIds);
     const dbFormatted = dbRequests.map((r) => ({
       id: r.id,
       kind: r.kind,
@@ -82,11 +86,13 @@ approvalRequestsRouter.get('/', async (req, res, next) => {
       quantity: r.quantity,
       reason: r.reason,
       requestedBy: r.requestedBy,
+      requestedByName: (r.requestedBy && displayNames.get(r.requestedBy)) ?? r.requestedBy ?? undefined,
       requestedAt: r.requestedAt,
       referenceId: r.referenceId,
       referenceType: r.referenceType,
       status: r.status,
       reviewedBy: r.reviewedBy,
+      reviewedByName: (r.reviewedBy && displayNames.get(r.reviewedBy)) ?? r.reviewedBy ?? undefined,
       reviewedAt: r.reviewedAt,
     }));
 
@@ -110,11 +116,15 @@ const reviewSchema = z.object({
  * PATCH /api/approval-requests/:id
  * Approve or reject. For DB records, updates. For derived (movement-*, damage-*), creates ApprovalRequest and updates reference.
  */
-approvalRequestsRouter.patch('/:id', async (req, res, next) => {
+approvalRequestsRouter.patch('/:id', optionalAuth, async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const body = reviewSchema.parse(req.body);
-    const reviewedBy = body.reviewedBy ?? req.header('x-user-email') ?? 'admin';
+    const reviewedBy =
+      body.reviewedBy ??
+      (await resolveRequestUserId(req)) ??
+      getRequestIdentity(req) ??
+      'admin';
 
     if (id.startsWith('movement-')) {
       const movementId = id.replace('movement-', '');
@@ -156,14 +166,18 @@ approvalRequestsRouter.patch('/:id', async (req, res, next) => {
       if (body.status === 'approved') {
         await prisma.damageIncident.update({
           where: { id: damageId },
-          data: { status: 'settled', resolvedAt: new Date() },
+          data: {
+            status: 'settled',
+            resolvedAt: new Date(),
+            resolvedByUserId: reviewedBy,
+          },
         });
       }
       return res.json({ id, status: body.status, message: 'Recorded' });
     }
 
     const updated = await prisma.approvalRequest.update({
-      where: { id },
+      where: { id: id as string },
       data: {
         status: body.status,
         reviewedBy,
