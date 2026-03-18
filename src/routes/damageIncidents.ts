@@ -6,11 +6,12 @@ import { Request, Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import {
-  findOrCreateUserByEmail,
+  findUserIdByEmail,
   getDisplayNamesForUserIds,
   getRequestIdentity,
   resolveRequestUserId,
 } from '../lib/requestUser';
+import { getDamageIncidentUploadsPath } from '../lib/paths';
 import { optionalAuth } from '../middleware/auth';
 
 export const damageIncidentsRouter = Router();
@@ -41,15 +42,14 @@ function buildActorDisplayLabel(name?: string | null, userId?: string | null): s
 /** Reporter user id for DB. Prefer body email, then x-user-email, then x-reporter-user-id, else raw identity. */
 async function getReporterFromRequest(
   req: Request,
-  bodyEmail?: string | null,
-  bodyName?: string | null
+  bodyEmail?: string | null
 ): Promise<string | null> {
   const reporterHeaderId = req.get('x-reporter-user-id')?.trim() || null;
   const email = (bodyEmail?.trim() || req.get('x-user-email')?.trim() || req.auth?.email?.trim()) || null;
   if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     try {
-      const name = (bodyName?.trim() || req.get('x-user-name')?.trim()) || undefined;
-      return await findOrCreateUserByEmail(email, name || undefined);
+      const existingId = await findUserIdByEmail(email);
+      if (existingId) return existingId;
     } catch {
       // fall through
     }
@@ -59,20 +59,6 @@ async function getReporterFromRequest(
   internalId = await resolveRequestUserId(req);
   if (internalId) return internalId;
   return getRequestIdentity(req) ?? reporterHeaderId;
-}
-
-/** Display name for "Reported by" / "Resolved by". Prefer body name, then x-user-name, then email, then fallback. */
-function getRequestDisplayName(
-  req: Request,
-  fallback: string = 'Unknown',
-  bodyName?: string | null,
-  bodyEmail?: string | null
-): string {
-  const name = (bodyName?.trim() || req.get('x-user-name')?.trim()) || null;
-  if (name) return name.slice(0, 191);
-  const email = (bodyEmail?.trim() || req.get('x-user-email')?.trim() || req.auth?.email?.trim()) || null;
-  if (email) return email.slice(0, 191);
-  return fallback;
 }
 
 /** Resolve optional FK ids: only return ids that exist in DB to avoid constraint violations (e.g. bookingId from another system). */
@@ -102,7 +88,7 @@ const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const MAX_FILES_PER_REQUEST = 8;
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.memoryStorage(), // Use memory storage to avoid writing to disk
   limits: {
     files: MAX_FILES_PER_REQUEST,
     fileSize: MAX_FILE_SIZE_BYTES,
@@ -119,10 +105,10 @@ const upload = multer({
 const createDamageIncidentSchema = z
   .object({
     bookingId: z.string().optional(),
-    unitId: z.string().min(1).optional(),
-    warehouseId: z.string().min(1).optional(),
+    // UI may send empty strings for unselected fields; accept and treat as missing.
+    unitId: z.string().optional(),
+    warehouseId: z.string().optional(),
     reportedByUserId: z.string().optional(),
-    reportedByName: z.string().max(191).optional(),
     reportedByEmail: z.string().max(191).optional(),
     resolvedByUserId: z.string().optional(),
     reportedAt: z.coerce.date().optional(),
@@ -139,15 +125,20 @@ const createDamageIncidentSchema = z
       .optional()
       .transform((v) => (v === 'in-review' ? 'in_review' : v)),
   })
-  .refine((data) => !!data.unitId || !!data.warehouseId, {
+  .refine((data) => {
+    const unit = (data.unitId ?? '').trim();
+    const warehouse = (data.warehouseId ?? '').trim();
+    return !!unit || !!warehouse;
+  }, {
     message: 'Either unitId or warehouseId is required.',
     path: ['unitId'],
   });
 
 const updateDamageIncidentSchema = z.object({
   bookingId: z.string().nullable().optional(),
-  unitId: z.string().min(1).nullable().optional(),
-  warehouseId: z.string().min(1).nullable().optional(),
+  // Allow clearing with null and avoid rejecting empty strings.
+  unitId: z.string().nullable().optional(),
+  warehouseId: z.string().nullable().optional(),
   reportedByUserId: z.string().nullable().optional(),
   resolvedByUserId: z.string().nullable().optional(),
   reportedAt: z.coerce.date().optional(),
@@ -211,8 +202,6 @@ damageIncidentsRouter.get('/', optionalAuth, async (req, res, next) => {
     const userDisplay = await getDisplayNamesForUserIds(userIds);
 
     type IncRow = (typeof incidents)[number] & {
-      reportedByName?: string | null;
-      resolvedByName?: string | null;
       stockMovements?: Array<{ id: string; productId: string; quantity: number }>;
       unitId?: string | null;
       warehouseId?: string | null;
@@ -229,11 +218,11 @@ damageIncidentsRouter.get('/', optionalAuth, async (req, res, next) => {
       }));
       const { stockMovements: _sm, ...rest } = inc;
       const reportedBy = buildActorDisplayLabel(
-        row.reportedByName ?? (row.reportedByUserId ? userDisplay.get(row.reportedByUserId) : null),
+        row.reportedByUserId ? userDisplay.get(row.reportedByUserId) : null,
         row.reportedByUserId
       );
       const resolvedBy = buildActorDisplayLabel(
-        row.resolvedByName ?? (row.resolvedByUserId ? userDisplay.get(row.resolvedByUserId) : null),
+        row.resolvedByUserId ? userDisplay.get(row.resolvedByUserId) : null,
         row.resolvedByUserId
       );
       return {
@@ -267,19 +256,12 @@ damageIncidentsRouter.post('/', optionalAuth, async (req, res, next) => {
       });
       return;
     }
-    const bodyReportedByName = payload.reportedByName ?? null;
     const bodyReportedByEmail = payload.reportedByEmail ?? null;
-    const reportedByUserId = await getReporterFromRequest(req, bodyReportedByEmail, bodyReportedByName);
-    const reportedByName =
-      getRequestDisplayName(req, 'Unknown', bodyReportedByName, bodyReportedByEmail) ||
-      (reportedByUserId ?? '') ||
-      'Unknown';
+    const reportedByUserId = await getReporterFromRequest(req, bodyReportedByEmail);
     const isResolvedStatus = payload.status === 'resolved' || payload.status === 'charged_to_guest' || payload.status === 'absorbed' || payload.status === 'settled';
     let resolvedByUserId: string | null | undefined = payload.resolvedByUserId ?? null;
-    let resolvedByName: string | null = null;
     if (resolvedByUserId == null && isResolvedStatus) {
       resolvedByUserId = (await resolveRequestUserId(req)) ?? getRequestIdentity(req);
-      resolvedByName = getRequestDisplayName(req);
     }
     const createData: Record<string, unknown> = {
       description: payload.description,
@@ -290,9 +272,7 @@ damageIncidentsRouter.post('/', optionalAuth, async (req, res, next) => {
       status: payload.status as 'open' | 'charged_to_guest' | 'absorbed' | 'settled',
       reportedAt: payload.reportedAt ?? new Date(),
       reportedByUserId: reportedByUserId ?? undefined,
-      reportedByName: reportedByName || undefined,
       resolvedByUserId: resolvedByUserId ?? undefined,
-      resolvedByName: resolvedByName ?? undefined,
     };
     if (fks.bookingId != null) createData.bookingId = fks.bookingId;
     if (fks.unitId != null) createData.unitId = fks.unitId;
@@ -308,15 +288,15 @@ damageIncidentsRouter.post('/', optionalAuth, async (req, res, next) => {
       },
     });
 
-    const inc = incident as typeof incident & { reportedByName?: string | null; resolvedByName?: string | null };
+    const inc = incident;
     const reporterDisplayMap = inc.reportedByUserId ? await getDisplayNamesForUserIds([inc.reportedByUserId]) : new Map<string, string>();
     const resolverDisplayMap = inc.resolvedByUserId ? await getDisplayNamesForUserIds([inc.resolvedByUserId]) : new Map<string, string>();
     const reportedBy = buildActorDisplayLabel(
-      inc.reportedByName ?? (inc.reportedByUserId ? reporterDisplayMap.get(inc.reportedByUserId) : null),
+      inc.reportedByUserId ? reporterDisplayMap.get(inc.reportedByUserId) : null,
       inc.reportedByUserId
     );
     const resolvedBy = buildActorDisplayLabel(
-      inc.resolvedByName ?? (inc.resolvedByUserId ? resolverDisplayMap.get(inc.resolvedByUserId) : null),
+      inc.resolvedByUserId ? resolverDisplayMap.get(inc.resolvedByUserId) : null,
       inc.resolvedByUserId
     );
     res.status(201).json({ ...incident, reportedBy, resolvedBy });
@@ -419,38 +399,27 @@ damageIncidentsRouter.post('/:id/attachments', optionalAuth, upload.array('files
       return res.status(400).json({ message: 'At least one image file is required.' });
     }
 
-    const uploadDir = path.join(process.cwd(), 'uploads', 'damage-incidents');
-    await fs.mkdir(uploadDir, { recursive: true });
-
     const uploadedByUserId = await resolveRequestUserId(req);
 
     const created = await Promise.all(
       files.map(async (file) => {
-        const extension = path.extname(file.originalname) || (
-          file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : '.jpg'
-        );
-        const safeFileName = `${incidentId}-${Date.now()}-${randomUUID()}${extension}`;
-        const diskPath = path.join(uploadDir, safeFileName);
-        await fs.writeFile(diskPath, file.buffer);
-
-        const publicUrl = toAttachmentUrl(req, safeFileName);
         return prisma.damageAttachment.create({
           data: {
             damageIncidentId: incidentId,
-            fileUrl: publicUrl,
+            fileUrl: 'pending',
             fileName: file.originalname,
             mimeType: file.mimetype,
             uploadedByUserId,
+            // Prisma Bytes expects `Uint8Array<ArrayBuffer>`. Multer buffer is `Buffer<ArrayBufferLike>`.
+            fileData: new Uint8Array(file.buffer),
           },
         });
       })
     );
 
-    return res.status(201).json({
+    res.status(201).json({
       attachments: created.map((entry) => ({
         id: entry.id,
-        url: toAttachmentContentUrl(req, entry.id),
-        fileUrl: entry.fileUrl,
         fileName: entry.fileName,
         mimeType: entry.mimeType,
         createdAt: entry.createdAt,
@@ -477,15 +446,15 @@ damageIncidentsRouter.get('/:id', async (req, res, next) => {
       return res.status(404).json({ message: 'Damage incident not found' });
     }
 
-    const inc = incident as typeof incident & { reportedByName?: string | null; resolvedByName?: string | null };
+    const inc = incident;
     const ids = [inc.reportedByUserId, inc.resolvedByUserId].filter(Boolean) as string[];
     const display = await getDisplayNamesForUserIds(ids);
     const reportedBy = buildActorDisplayLabel(
-      inc.reportedByName ?? (inc.reportedByUserId ? display.get(inc.reportedByUserId) : null),
+      inc.reportedByUserId ? display.get(inc.reportedByUserId) : null,
       inc.reportedByUserId
     );
     const resolvedBy = buildActorDisplayLabel(
-      inc.resolvedByName ?? (inc.resolvedByUserId ? display.get(inc.resolvedByUserId) : null),
+      inc.resolvedByUserId ? display.get(inc.resolvedByUserId) : null,
       inc.resolvedByUserId
     );
 
@@ -508,11 +477,9 @@ damageIncidentsRouter.patch('/:id', optionalAuth, async (req, res, next) => {
       warehouseId: payload.warehouseId ?? null,
     });
     let resolvedByUserId: string | null | undefined = payload.resolvedByUserId;
-    let resolvedByName: string | null = null;
     const isResolvedStatus = payload.status === 'resolved' || payload.status === 'charged_to_guest' || payload.status === 'absorbed' || payload.status === 'settled';
     if (resolvedByUserId == null && isResolvedStatus) {
       resolvedByUserId = (await resolveRequestUserId(req)) ?? getRequestIdentity(req);
-      resolvedByName = getRequestDisplayName(req);
     }
     const incidentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const incident = await prisma.damageIncident.update({
@@ -522,7 +489,6 @@ damageIncidentsRouter.patch('/:id', optionalAuth, async (req, res, next) => {
         ...(payload.unitId !== undefined ? { unitId: payload.unitId === null ? null : fks.unitId ?? null } : {}),
         ...(payload.warehouseId !== undefined ? { warehouseId: payload.warehouseId === null ? null : fks.warehouseId ?? null } : {}),
         ...(resolvedByUserId !== undefined ? { resolvedByUserId: resolvedByUserId ?? null } : {}),
-        ...(resolvedByName !== null ? { resolvedByName } : {}),
         reportedAt: payload.reportedAt,
         resolvedAt: payload.resolvedAt,
         description: payload.description,
@@ -539,15 +505,15 @@ damageIncidentsRouter.patch('/:id', optionalAuth, async (req, res, next) => {
       },
     });
 
-    const inc = incident as typeof incident & { reportedByName?: string | null; resolvedByName?: string | null };
+    const inc = incident;
     const ids = [inc.reportedByUserId, inc.resolvedByUserId].filter(Boolean) as string[];
     const display = await getDisplayNamesForUserIds(ids);
     const reportedBy = buildActorDisplayLabel(
-      inc.reportedByName ?? (inc.reportedByUserId ? display.get(inc.reportedByUserId) : null),
+      inc.reportedByUserId ? display.get(inc.reportedByUserId) : null,
       inc.reportedByUserId
     );
     const resolvedBy = buildActorDisplayLabel(
-      inc.resolvedByName ?? (inc.resolvedByUserId ? display.get(inc.resolvedByUserId) : null),
+      inc.resolvedByUserId ? display.get(inc.resolvedByUserId) : null,
       inc.resolvedByUserId
     );
     res.json({

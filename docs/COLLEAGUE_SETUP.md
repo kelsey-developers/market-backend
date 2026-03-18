@@ -93,7 +93,11 @@ npm run tunnel
   - **Windows:** `winget install Cloudflare.cloudflared`
   - Then run `npm run tunnel` again.
 
-Look for the line that looks like:
+### Quick mode (default)
+
+By default, `npm run tunnel` uses quick mode unless `CLOUDFLARED_TUNNEL_NAME` is set in `.env`.
+
+Look for a line like:
 
 ```
 |  https://something-random.trycloudflare.com                                      |
@@ -101,14 +105,39 @@ Look for the line that looks like:
 
 That is your **public API URL**.
 
+### Fixed URL mode (recommended)
+
+If you do not want to change URL every restart, use a named tunnel once:
+
+```powershell
+cloudflared tunnel login
+cloudflared tunnel create market-api
+cloudflared tunnel route dns market-api market-api.yourdomain.com
+```
+
+Then set in `market-backend/.env`:
+
+```env
+CLOUDFLARED_MODE=fixed
+CLOUDFLARED_TUNNEL_NAME=market-api
+```
+
+Start it with:
+
+```powershell
+npm run tunnel:fixed
+```
+
+Now the URL stays fixed (for example `https://market-api.yourdomain.com`).
+
 ## A.7 Share with colleagues
 
 Send them:
 
-1. **Market API URL** — e.g. `https://prices-learned-sms-applies.trycloudflare.com` (no trailing slash).
+1. **Market API URL** — e.g. `https://market-api.yourdomain.com` (fixed) or `https://something-random.trycloudflare.com` (quick mode).
 2. **Main app API URL** (if they need auth/other services) — e.g. your `API_URL` (e.g. `https://kelsey.idateph.com`).
 
-**Note:** The tunnel URL **changes every time** you restart `npm run tunnel`. When it changes, tell colleagues to update their `MARKET_API_URL`.
+**Note:** Quick tunnel URL changes on restart. Fixed named tunnel URL does not.
 
 ---
 
@@ -139,7 +168,7 @@ Create a file named `.env.local` in the **main-frontend** folder.
 
 ```env
 # Shared market backend (from host's Cloudflare Tunnel)
-MARKET_API_URL=https://YOUR-TUNNEL-URL.trycloudflare.com
+MARKET_API_URL=https://YOUR-MARKET-API-URL
 
 # Main app / auth backend (ask host or use your org's URL)
 API_URL=https://kelsey.idateph.com
@@ -147,7 +176,7 @@ API_URL=https://kelsey.idateph.com
 
 Replace:
 
-- `https://YOUR-TUNNEL-URL.trycloudflare.com` with the **exact URL** the host sent you (e.g. `https://prices-learned-sms-applies.trycloudflare.com`).
+- `https://YOUR-MARKET-API-URL` with the host URL (quick tunnel or fixed domain).
 - `API_URL` with your real auth/main API URL if different.
 
 **Optional (dev auth):**
@@ -172,8 +201,8 @@ Open the app (e.g. `http://localhost:3000`). The inventory and market features w
 
 ## B.5 If something doesn’t work
 
-1. **Check the URL** — Host may have restarted the tunnel; get the new URL and update `MARKET_API_URL` in `.env.local`, then restart the frontend (`npm run dev`).
-2. **Backend must be running** — Host must have both `npm run dev` (backend) and `npm run tunnel` running.
+1. **Check the URL** — only needed for quick mode. In fixed mode, URL stays the same.
+2. **Backend must be running** — Host must have both `npm run dev` (backend) and one tunnel command running (`npm run tunnel:fixed` or `npm run tunnel:quick`).
 3. **Restart after env change** — After editing `.env.local`, stop the dev server (Ctrl+C) and run `npm run dev` again.
 
 ---
@@ -184,10 +213,10 @@ The frontend sends market/inventory requests to `MARKET_API_URL`. For example:
 
 | Purpose | URL |
 |--------|-----|
-| API base | `https://YOUR-URL.trycloudflare.com` |
-| Health | `https://YOUR-URL.trycloudflare.com/health` |
-| API docs (Swagger) | `https://YOUR-URL.trycloudflare.com/docs` |
-| OpenAPI JSON | `https://YOUR-URL.trycloudflare.com/openapi.json` |
+| API base | `https://YOUR-URL` |
+| Health | `https://YOUR-URL/health` |
+| API docs (Swagger) | `https://YOUR-URL/docs` |
+| OpenAPI JSON | `https://YOUR-URL/openapi.json` |
 
 ---
 
@@ -200,8 +229,8 @@ The frontend sends market/inventory requests to `MARKET_API_URL`. For example:
 - [ ] Start DB: `npm run db:up` (or use existing MySQL)
 - [ ] Migrate + seed: `npm run prisma:migrate -- --name init`, `npm run seed`
 - [ ] Terminal 1: `npm run dev`
-- [ ] Terminal 2: `npm run tunnel`
-- [ ] Share the `https://....trycloudflare.com` URL with colleagues
+- [ ] Terminal 2: `npm run tunnel:fixed` (or `npm run tunnel:quick`)
+- [ ] Share the market API URL with colleagues
 
 **Colleague**
 

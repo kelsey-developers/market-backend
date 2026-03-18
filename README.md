@@ -41,6 +41,34 @@ Health checks:
 - `GET /health` (service alive)
 - `GET /health/ready` (service + DB reachable)
 
+## 3.1) Run API + DB fully in Docker
+
+If you want to run both backend and MySQL in Docker:
+
+```bash
+copy .env.example .env
+npm run docker:up
+```
+
+Then open:
+
+- `http://localhost:4000/health`
+- `http://localhost:4000/docs`
+
+Useful commands:
+
+```bash
+npm run docker:logs
+npm run docker:down
+```
+
+Notes:
+
+- In Docker, backend uses `DATABASE_URL=mysql://market_user:market_pass@db:3306/market` internally.
+- Upload files are persisted in Docker volume `uploads_data`.
+- This is stable while your machine is on. For true always-on hosting, run this Docker stack on a cloud VM/server.
+- If port 4000 is already in use on your machine, set `APP_PORT=4010` in `.env`, then access `http://localhost:4010`.
+
 ## 4) Endpoints
 
 - `GET /health`

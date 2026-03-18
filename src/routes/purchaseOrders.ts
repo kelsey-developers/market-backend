@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { resolveRequestUserId } from '../lib/requestUser';
+import { findUserIdByEmail, resolveRequestUserId } from '../lib/requestUser';
 import { optionalAuth } from '../middleware/auth';
 
 export const purchaseOrdersRouter = Router();
@@ -42,11 +42,56 @@ const updatePurchaseOrderSchema = z.object({
   notes: z.string().optional(),
 });
 
+const mapPurchaseOrderCreatorFields = <T extends {
+  createdByUserId?: string | null;
+  createdByUser?: { name?: string | null; email?: string | null } | null;
+}>(purchaseOrder: T) => ({
+  ...purchaseOrder,
+  createdByName: purchaseOrder.createdByUser?.name ?? null,
+  createdByEmail: purchaseOrder.createdByUser?.email ?? null,
+  createdBy:
+    purchaseOrder.createdByUser?.name ??
+    purchaseOrder.createdByUser?.email ??
+    purchaseOrder.createdByUserId ??
+    'System',
+});
+
+const resolveGoodsReceiptReceiverUserId = async (
+  req: Parameters<typeof resolveRequestUserId>[0],
+  providedReceiver?: string
+): Promise<string | undefined> => {
+  const resolvedFromAuth = await resolveRequestUserId(req);
+  if (resolvedFromAuth) return resolvedFromAuth;
+
+  const requestEmail = req.auth?.email?.trim();
+  if (requestEmail) {
+    const existingByEmail = await findUserIdByEmail(requestEmail);
+    return existingByEmail ?? undefined;
+  }
+
+  const candidate = providedReceiver?.trim();
+  if (!candidate) return undefined;
+
+  // Accept direct email input and map it to an internal FK user.
+  if (candidate.includes('@')) {
+    const existingByEmail = await findUserIdByEmail(candidate);
+    return existingByEmail ?? undefined;
+  }
+
+  const existing = await prisma.user.findUnique({
+    where: { id: candidate },
+    select: { id: true },
+  });
+
+  return existing?.id;
+};
+
 purchaseOrdersRouter.get('/', async (_req, res, next) => {
   try {
-    const purchaseOrders = await prisma.purchaseOrder.findMany({
+    const rows = await prisma.purchaseOrder.findMany({
       include: {
         supplier: true,
+        createdByUser: true,
         items: {
           include: {
             product: true,
@@ -55,6 +100,8 @@ purchaseOrdersRouter.get('/', async (_req, res, next) => {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    const purchaseOrders = rows.map((purchaseOrder) => mapPurchaseOrderCreatorFields(purchaseOrder));
 
     res.json({ purchaseOrders });
   } catch (error) {
@@ -68,6 +115,7 @@ purchaseOrdersRouter.get('/:id', async (req, res, next) => {
       where: { id: req.params.id },
       include: {
         supplier: true,
+        createdByUser: true,
         items: {
           include: {
             product: true,
@@ -94,21 +142,23 @@ purchaseOrdersRouter.get('/:id', async (req, res, next) => {
       return;
     }
 
-    res.json(purchaseOrder);
+    res.json(mapPurchaseOrderCreatorFields(purchaseOrder));
   } catch (error) {
     next(error);
   }
 });
 
-purchaseOrdersRouter.post('/', async (req, res, next) => {
+purchaseOrdersRouter.post('/', optionalAuth, async (req, res, next) => {
   try {
     const payload = createPurchaseOrderSchema.parse(req.body);
     const poNumber = `PO-${Date.now()}`;
+    const createdByUserId = await resolveGoodsReceiptReceiverUserId(req);
 
     const purchaseOrder = await prisma.purchaseOrder.create({
       data: {
         poNumber,
         supplierId: payload.supplierId,
+        createdByUserId: createdByUserId ?? undefined,
         status: 'ORDERED',
         orderedAt: new Date(),
         notes: payload.notes,
@@ -121,11 +171,17 @@ purchaseOrdersRouter.post('/', async (req, res, next) => {
         },
       },
       include: {
-        items: true,
+        supplier: true,
+        createdByUser: true,
+        items: {
+          include: {
+            product: true,
+          },
+        },
       },
     });
 
-    res.status(201).json(purchaseOrder);
+    res.status(201).json(mapPurchaseOrderCreatorFields(purchaseOrder));
   } catch (error) {
     next(error);
   }
@@ -135,7 +191,7 @@ purchaseOrdersRouter.post('/:id/receive', optionalAuth, async (req, res, next) =
   try {
     const payload = receivePurchaseOrderSchema.parse(req.body);
     const purchaseOrderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const receivedByUserId = (await resolveRequestUserId(req)) ?? payload.receivedByUserId ?? undefined;
+    const receivedByUserId = await resolveGoodsReceiptReceiverUserId(req, payload.receivedByUserId);
 
     const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
@@ -249,6 +305,7 @@ purchaseOrdersRouter.post('/:id/receive', optionalAuth, async (req, res, next) =
         include: {
           items: true,
           supplier: true,
+          createdByUser: true,
         },
       });
 
@@ -271,7 +328,7 @@ purchaseOrdersRouter.post('/:id/receive', optionalAuth, async (req, res, next) =
       }
 
       return {
-        purchaseOrder: updatedPurchaseOrder,
+        purchaseOrder: mapPurchaseOrderCreatorFields(updatedPurchaseOrder),
         goodsReceipt: {
           ...createdReceipt,
           receivedBy:
@@ -321,6 +378,7 @@ purchaseOrdersRouter.patch('/:id', async (req, res, next) => {
       },
       include: {
         supplier: true,
+        createdByUser: true,
         items: {
           include: {
             product: true,
@@ -329,7 +387,7 @@ purchaseOrdersRouter.patch('/:id', async (req, res, next) => {
       },
     });
 
-    res.json(updated);
+    res.json(mapPurchaseOrderCreatorFields(updated));
   } catch (error) {
     next(error);
   }

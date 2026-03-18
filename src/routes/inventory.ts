@@ -493,6 +493,7 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       purchaseOrders = await prisma.purchaseOrder.findMany({
         include: {
           supplier: true,
+          createdByUser: true,
           items: {
             include: { product: true },
             orderBy: { id: 'asc' },
@@ -529,6 +530,7 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       purchaseOrders = await prisma.purchaseOrder.findMany({
         include: {
           supplier: true,
+          createdByUser: true,
           items: {
             include: { product: true },
             orderBy: { id: 'asc' },
@@ -671,6 +673,14 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       return {
         id: purchaseOrder.id,
         supplierId: purchaseOrder.supplierId,
+        createdByUserId: purchaseOrder.createdByUserId ?? null,
+        createdByName: purchaseOrder.createdByUser?.name ?? null,
+        createdByEmail: purchaseOrder.createdByUser?.email ?? null,
+        createdBy:
+          purchaseOrder.createdByUser?.name ??
+          purchaseOrder.createdByUser?.email ??
+          purchaseOrder.createdByUserId ??
+          'System',
         orderDate: formatDate(orderedAt),
         expectedDelivery: formatDate(expectedDelivery),
         status: toPurchaseOrderStatus(purchaseOrder.status),
@@ -790,13 +800,7 @@ inventoryRouter.get('/dataset', async (req, res, next) => {
       receivedProductIds.has(allocation.productId)
     );
 
-    const EXTERNAL_SYNC_PROPERTY_NAME = 'External Sync Units';
-    const visibleUnits = units.filter((unit) => {
-      const propertyName = unit.property?.name ?? '';
-      const code = unit.code ?? '';
-      // Only expose units that come from the external sync source
-      return propertyName === EXTERNAL_SYNC_PROPERTY_NAME || code.startsWith('ext-');
-    });
+    const visibleUnits = units;
 
     const unitsPayload = visibleUnits.map((unit) => {
       const itemCount = inventoryVisibleAllocations.filter((allocation) => allocation.unitId === unit.id).length;

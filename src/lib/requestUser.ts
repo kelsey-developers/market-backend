@@ -33,34 +33,22 @@ export async function resolveRequestUserId(
   return null;
 }
 
-/** Default role for auto-created users (e.g. reporter not yet in User table). */
-const DEFAULT_REPORTER_ROLE = 'operations' as const;
-
 /**
- * Find User by email, or create one so we can store a valid User.id and show name in list/GET.
- * Use when the request has x-user-email but no matching User (e.g. auth user from another system).
+ * Resolve an existing internal User.id by email.
+ * This is lookup-only: it never creates local users or assigns local roles.
  */
-export async function findOrCreateUserByEmail(
-  email: string,
-  displayName?: string
-): Promise<string> {
+export async function findUserIdByEmail(
+  email: string
+): Promise<string | null> {
   const trimmed = email.trim().toLowerCase();
-  if (!trimmed) throw new Error('Email required for findOrCreateUserByEmail');
+  if (!trimmed) return null;
+
   const existing = await prisma.user.findUnique({
     where: { email: trimmed },
     select: { id: true },
   });
-  if (existing) return existing.id;
-  const name = (displayName?.trim() || trimmed).slice(0, 191);
-  const created = await prisma.user.create({
-    data: {
-      email: trimmed,
-      name: name || trimmed,
-      role: DEFAULT_REPORTER_ROLE,
-    },
-    select: { id: true },
-  });
-  return created.id;
+
+  return existing?.id ?? null;
 }
 
 /**

@@ -33,6 +33,16 @@ const getForwardHeaders = (req: Request): HeadersInit => {
   return headers;
 };
 
+const looksLikeHtml = (text: string): boolean => {
+  const trimmed = text.trimStart().toLowerCase();
+  return trimmed.startsWith('<!doctype') || trimmed.startsWith('<html');
+};
+
+const looksLikeNgrokErrorPage = (text: string): boolean => {
+  const haystack = text.toLowerCase();
+  return haystack.includes('ngrok') && haystack.includes('err_ngrok_');
+};
+
 export const tryProxyAuthService = async (req: Request, res: Response): Promise<boolean> => {
   const targetUrl = buildTargetUrl(req);
   if (!targetUrl) return false;
@@ -54,6 +64,11 @@ export const tryProxyAuthService = async (req: Request, res: Response): Promise<
 
     const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
     const payloadText = await upstream.text();
+
+    // Let route handlers fall back to local DB when upstream is degraded.
+    if (upstream.status >= 500 || looksLikeHtml(payloadText) || looksLikeNgrokErrorPage(payloadText)) {
+      return false;
+    }
 
     res.status(upstream.status);
     res.setHeader('Content-Type', contentType);

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { getAuthServiceBaseUrl, tryProxyAuthService } from '../lib/authServiceProxy';
+import { getAuthServiceBaseUrl } from '../lib/authServiceProxy';
 import { prisma } from '../lib/prisma';
 import { requireAnyRole, requireAuth } from '../middleware/auth';
 
@@ -198,6 +198,15 @@ export async function syncUnitsFromExternalSource(): Promise<void> {
 
 const fetchExternalUnitsAndSync = async (req: { originalUrl: string; headers: Record<string, unknown> }) => {
   const baseUrl = getAuthServiceBaseUrl();
+  if (!baseUrl.trim()) {
+    return {
+      ok: false as const,
+      status: 0,
+      contentType: 'application/json; charset=utf-8',
+      body: '',
+    };
+  }
+
   const upstream = await fetch(`${baseUrl.replace(/\/+$/, '')}${req.originalUrl}`, {
     method: 'GET',
     headers: {
@@ -225,6 +234,14 @@ const fetchExternalUnitsAndSync = async (req: { originalUrl: string; headers: Re
   }
 
   return { ok: true as const, status: upstream.status, contentType, body: text };
+};
+
+const syncUnitsForRequest = async (req: { originalUrl: string; headers: Record<string, unknown> }) => {
+  try {
+    await fetchExternalUnitsAndSync(req);
+  } catch {
+    // Keep local DB responses resilient when upstream sync is unavailable.
+  }
 };
 
 const toNumber = (value: unknown): number => {
@@ -300,15 +317,7 @@ const toListingBase = (
 
 unitsRouter.get('/', async (req, res, next) => {
   try {
-    try {
-      const upstream = await fetchExternalUnitsAndSync(req);
-      res.status(upstream.status);
-      res.setHeader('Content-Type', upstream.contentType);
-      res.send(upstream.body);
-      return;
-    } catch {
-      // fallback to local list when external is not reachable
-    }
+    await syncUnitsForRequest(req);
 
     const query = listUnitsQuerySchema.parse(req.query);
 
@@ -349,7 +358,7 @@ unitsRouter.get('/', async (req, res, next) => {
 
 unitsRouter.get('/manage', requireAuth, requireAnyRole(['admin', 'agent']), async (req, res, next) => {
   try {
-    if (await tryProxyAuthService(req, res)) return;
+    await syncUnitsFromExternalSource();
 
     const units = await prisma.unit.findMany({
       include: {
@@ -406,7 +415,7 @@ unitsRouter.get('/manage', requireAuth, requireAnyRole(['admin', 'agent']), asyn
 
 unitsRouter.get('/:id', async (req, res, next) => {
   try {
-    if (await tryProxyAuthService(req, res)) return;
+    await syncUnitsForRequest(req);
 
     const unitId = String(req.params.id);
 
@@ -436,8 +445,6 @@ unitsRouter.get('/:id', async (req, res, next) => {
 
 unitsRouter.patch('/:id', requireAuth, requireAnyRole(['admin', 'agent']), async (req, res, next) => {
   try {
-    if (await tryProxyAuthService(req, res)) return;
-
     const unitId = String(req.params.id);
     const payload = updateUnitSchema.parse(req.body);
 

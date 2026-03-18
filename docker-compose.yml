@@ -1,4 +1,25 @@
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql://market_user:market_pass@db:3306/market
+      PORT: 4000
+      NODE_ENV: production
+      CORS_ORIGIN: http://localhost:3000
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-4000}:4000"
+    volumes:
+      - uploads_data:/app/uploads
+
   db:
     image: mysql:8.4
     container_name: market_mysql
@@ -20,3 +41,4 @@ services:
 
 volumes:
   mysql_data:
+  uploads_data:

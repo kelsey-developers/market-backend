@@ -129,6 +129,7 @@ model User {
   uploadedGoodsReceiptAttachments GoodsReceiptAttachment[] @relation("GoodsReceiptAttachmentUploader")
   recordedPaymentTransactions  PaymentTransaction[] @relation("PaymentTransactionRecorder")
   receivedGoodsReceipts        GoodsReceipt[]       @relation("GoodsReceiptReceiver")
+  createdPurchaseOrders        PurchaseOrder[]      @relation("PurchaseOrderCreator")
   propertyAccesses             UserPropertyAccess[]
 }
 
@@ -235,6 +236,7 @@ model PurchaseOrder {
   id             String               @id @default(cuid())
   poNumber       String               @unique
   supplierId     String
+  createdByUserId String?
   status         PurchaseOrderStatus  @default(DRAFT)
   orderedAt      DateTime?
   receivedAt     DateTime?
@@ -243,9 +245,12 @@ model PurchaseOrder {
   updatedAt      DateTime             @updatedAt
 
   supplier       Supplier             @relation(fields: [supplierId], references: [id])
+  createdByUser  User?                @relation("PurchaseOrderCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   items          PurchaseOrderItem[]
   receipts       GoodsReceipt[]
   movements      StockMovement[]
+
+  @@index([createdByUserId])
 }
 
 model PurchaseOrderItem {
@@ -455,9 +460,7 @@ model DamageIncident {
   unitId             String?
   warehouseId        String?
   reportedByUserId   String?  // Reporter identifier (internal User.id or auth id); no FK so auth ids are valid
-  reportedByName     String?  // Display name from request (x-user-name / email) — always show this in UI
   resolvedByUserId   String?  // Resolver identifier (internal User.id or auth id); no FK
-  resolvedByName     String?  // Display name when resolved — always show this in UI
   reportedAt         DateTime             @default(now())
   resolvedAt         DateTime?
   description        String
@@ -489,6 +492,7 @@ model DamageAttachment {
   uploadedByUser   User?          @relation("DamageAttachmentUploader", fields: [uploadedByUserId], references: [id])
 
   @@index([damageIncidentId])
+  fileData         Bytes?       @db.LongBlob
 }
 
 model GoodsReceipt {

@@ -75,6 +75,59 @@ goodsReceiptsRouter.get('/attachments/:attachmentId/content', async (req, res, n
   }
 });
 
+goodsReceiptsRouter.get('/:id/attachments', async (req, res, next) => {
+  try {
+    const goodsReceiptId = String(req.params.id || '').trim();
+    if (!goodsReceiptId) {
+      res.status(400).json({ message: 'Goods receipt ID is required.' });
+      return;
+    }
+
+    const exists = await prisma.goodsReceipt.findUnique({
+      where: { id: goodsReceiptId },
+      select: { id: true },
+    });
+
+    if (!exists) {
+      res.status(404).json({ message: 'Goods receipt not found.' });
+      return;
+    }
+
+    const attachments = await prisma.goodsReceiptAttachment.findMany({
+      where: { goodsReceiptId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        fileUrl: true,
+        fileName: true,
+        mimeType: true,
+        sizeBytes: true,
+        createdAt: true,
+      },
+    });
+
+    const mapped = attachments.map((entry) => {
+      const url = entry.fileUrl || toAttachmentContentUrl(req, entry.id);
+      return {
+        id: entry.id,
+        url,
+        fileUrl: url,
+        fileName: entry.fileName,
+        mimeType: entry.mimeType,
+        sizeBytes: entry.sizeBytes,
+        createdAt: entry.createdAt,
+      };
+    });
+
+    res.json({
+      attachments: mapped,
+      urls: mapped.map((entry) => entry.url),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 goodsReceiptsRouter.post(
   '/:id/attachments',
   optionalAuth,

@@ -606,6 +606,22 @@ export const openApiDocument = {
       },
     },
     '/api/goods-receipts/{id}/attachments': {
+      get: {
+        tags: ['Goods Receipts'],
+        summary: 'List goods receipt attachments',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: { description: 'List of attachments' },
+          404: { description: 'Goods receipt not found' },
+        },
+      },
       post: {
         tags: ['Goods Receipts'],
         summary: 'Upload goods receipt images',

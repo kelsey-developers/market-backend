@@ -1,6 +1,9 @@
 # Cloudflare Tunnel setup (market-backend)
 
-Expose your local backend (port 4000) to the internet with a public HTTPS URL—free, no bandwidth limits.
+Expose your local backend (port 4000) to the internet with a public HTTPS URL.
+
+- Quick tunnel: zero setup, rotating URL every run.
+- Named tunnel: fixed URL (recommended), no URL changes after restart.
 
 ## 1. Install cloudflared
 
@@ -33,12 +36,14 @@ npm run dev
 
 Leave it running (default: http://localhost:4000).
 
-## 3. Start the tunnel
+## 3. Choose tunnel mode
+
+### Option A: Quick tunnel (rotating URL)
 
 In a **second** terminal, from the project root:
 
 ```powershell
-npm run tunnel
+npm run tunnel:quick
 ```
 
 Or directly:
@@ -54,25 +59,63 @@ Your quick Tunnel has been created! Visit it at:
 https://random-words-here.trycloudflare.com
 ```
 
-That URL is your **public API base**. Share it with colleagues or set it as `MARKET_API_URL` in the frontend (e.g. `.env.local`).
+That URL is your **public API base** for this run only.
+
+### Option B: Named tunnel (fixed URL)
+
+Use this once and keep the same hostname forever.
+
+1. Login cloudflared to your Cloudflare account:
+
+```powershell
+cloudflared tunnel login
+```
+
+2. Create a named tunnel (one-time):
+
+```powershell
+cloudflared tunnel create market-api
+```
+
+3. Map a DNS hostname (replace with your domain in Cloudflare):
+
+```powershell
+cloudflared tunnel route dns market-api market-api.yourdomain.com
+```
+
+4. Set backend `.env`:
+
+```env
+CLOUDFLARED_MODE=fixed
+CLOUDFLARED_TUNNEL_NAME=market-api
+```
+
+5. Start fixed tunnel:
+
+```powershell
+npm run tunnel:fixed
+```
+
+Now your URL stays stable, e.g. `https://market-api.yourdomain.com`.
 
 ## 4. Use the public URL
 
-- **API base:** `https://YOUR-SUBDOMAIN.trycloudflare.com`
-- **Health:** `https://YOUR-SUBDOMAIN.trycloudflare.com/health`
-- **Docs:** `https://YOUR-SUBDOMAIN.trycloudflare.com/docs`
-- **OpenAPI JSON:** `https://YOUR-SUBDOMAIN.trycloudflare.com/openapi.json`
+- **API base:** `https://YOUR-URL`
+- **Health:** `https://YOUR-URL/health`
+- **Docs:** `https://YOUR-URL/docs`
+- **OpenAPI JSON:** `https://YOUR-URL/openapi.json`
 
 **Frontend:** In the app that calls this API, set:
 
 ```env
-MARKET_API_URL=https://YOUR-SUBDOMAIN.trycloudflare.com
+MARKET_API_URL=https://YOUR-URL
 ```
 
 (or `API_URL` / whatever env var your frontend uses for the market API base).
 
 ## Notes
 
-- The URL **changes each time** you run `cloudflared tunnel --url ...` (quick tunnel).
-- For a **fixed URL**, use a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/) and a hostname in the Cloudflare Zero Trust dashboard.
+- Quick tunnel URL **changes each time** you run it.
+- Named tunnel URL **does not change** after restart.
+- Named tunnels require a domain managed in Cloudflare.
 - Keep both the **backend** and **tunnel** terminals running while you need the API exposed.

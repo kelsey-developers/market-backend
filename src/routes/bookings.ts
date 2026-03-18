@@ -16,8 +16,9 @@ const createBookingSchema = z.object({
   listing_id: z.string().min(1),
   check_in_date: z.string().min(1),
   check_out_date: z.string().min(1),
-  num_guests: z.number().int().positive().default(1),
-  extra_guests: z.number().int().min(0).default(0),
+  num_guests: z.number().int().positive().optional(),
+  total_guests: z.number().int().positive().optional(),
+  extra_guests: z.number().int().min(0).optional(),
   landmark: z.string().optional(),
   parking_info: z.string().optional(),
   notes: z.string().optional(),
@@ -162,6 +163,7 @@ const EXTERNAL_SYNC_PROPERTY_NAME = 'External Sync Units';
 
 type ExternalBookingLike = {
   id?: string | number;
+  booking_id?: string | number;
   listing_id?: string;
   listingId?: string;
   listing?: { id?: string; title?: string };
@@ -170,6 +172,7 @@ type ExternalBookingLike = {
   check_in_date?: string;
   check_out_date?: string;
   num_guests?: number;
+  total_guests?: number;
   total_amount?: number;
   unit_charge?: number;
   notes?: string;
@@ -191,6 +194,7 @@ const parseExternalDateSafe = (value: unknown, fallback: Date) => {
 
 const mapExternalBookingStatus = (value?: string): BookingStatus => {
   const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'pending' || normalized === 'penciled') return 'pending';
   if (normalized === 'confirmed' || normalized === 'booked') return 'confirmed';
   if (normalized === 'checked_in' || normalized === 'ongoing') return 'checked_in';
   if (normalized === 'checked_out' || normalized === 'completed') return 'checked_out';
@@ -201,8 +205,17 @@ const mapExternalBookingStatus = (value?: string): BookingStatus => {
 const toExternalBookingRecords = (payload: unknown): ExternalBookingLike[] => {
   if (Array.isArray(payload)) return payload as ExternalBookingLike[];
   if (payload && typeof payload === 'object') {
-    const boxed = payload as { bookings?: unknown };
+    const boxed = payload as {
+      bookings?: unknown;
+      data?: unknown;
+      booking?: unknown;
+      item?: unknown;
+    };
     if (Array.isArray(boxed.bookings)) return boxed.bookings as ExternalBookingLike[];
+    if (Array.isArray(boxed.data)) return boxed.data as ExternalBookingLike[];
+    if (boxed.data && typeof boxed.data === 'object') return [boxed.data as ExternalBookingLike];
+    if (boxed.booking && typeof boxed.booking === 'object') return [boxed.booking as ExternalBookingLike];
+    if (boxed.item && typeof boxed.item === 'object') return [boxed.item as ExternalBookingLike];
     return [payload as ExternalBookingLike];
   }
   return [];
@@ -217,6 +230,14 @@ const recordHasClient = (raw: ExternalBookingLike): boolean => {
       (c.email && c.email.trim()) ||
       (c.contact_number && c.contact_number.trim())
   );
+};
+
+const toExternalBookingId = (raw: ExternalBookingLike): string => {
+  const directId = String(raw.id ?? raw.booking_id ?? '').trim();
+  if (directId) return directId;
+
+  const codeId = String(raw.reference_code ?? raw.booking_code ?? '').trim();
+  return codeId;
 };
 
 const ensureLocalUnitForBooking = async (
@@ -268,7 +289,7 @@ const syncExternalBookingsToLocal = async (payload: unknown, fallbackListingId?:
 
   await prisma.$transaction(async (tx) => {
     for (const raw of records) {
-      const id = String(raw.id ?? '').trim();
+      const id = toExternalBookingId(raw);
       if (!id) {
         skipped += 1;
         continue;
@@ -298,6 +319,7 @@ const syncExternalBookingsToLocal = async (payload: unknown, fallbackListingId?:
       const guestFirst = raw.client?.first_name?.trim() || '';
       const guestLast = raw.client?.last_name?.trim() || '';
       const guestName = `${guestFirst} ${guestLast}`.trim() || null;
+      const totalGuests = Math.max(1, Number(raw.total_guests ?? raw.num_guests ?? 1));
 
       const booking = await tx.booking.upsert({
         where: { id },
@@ -307,7 +329,7 @@ const syncExternalBookingsToLocal = async (payload: unknown, fallbackListingId?:
           channel: 'direct',
           status: mapExternalBookingStatus(raw.status),
           guestName,
-          guestCount: Math.max(1, Number(raw.num_guests ?? 1)),
+          guestCount: totalGuests,
           checkIn,
           checkOut,
           basePrice: Number.isFinite(basePrice) ? basePrice : 0,
@@ -322,7 +344,7 @@ const syncExternalBookingsToLocal = async (payload: unknown, fallbackListingId?:
           channel: 'direct',
           status: mapExternalBookingStatus(raw.status),
           guestName,
-          guestCount: Math.max(1, Number(raw.num_guests ?? 1)),
+          guestCount: totalGuests,
           checkIn,
           checkOut,
           basePrice: Number.isFinite(basePrice) ? basePrice : 0,
@@ -547,20 +569,96 @@ const createExternalBookingAndSync = async (
   };
 };
 
+const syncBookingsForRequest = async (
+  req: {
+    method: string;
+    originalUrl: string;
+    headers: Record<string, unknown>;
+    body?: unknown;
+  },
+  fallbackListingId?: string
+) => {
+  try {
+    await fetchExternalBookingsAndSync(req, fallbackListingId);
+  } catch {
+    // Keep local DB reads resilient when upstream sync is unavailable.
+  }
+};
+
+const extractBookingLookupKeys = (payload: unknown): string[] => {
+  const keys = new Set<string>();
+  const add = (value: unknown) => {
+    const str = String(value ?? '').trim();
+    if (str) keys.add(str);
+  };
+
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== 'object') return;
+    const obj = value as Record<string, unknown>;
+
+    add(obj.id);
+    add(obj.booking_id);
+    add(obj.reference_code);
+    add(obj.booking_code);
+
+    const nested = obj.data ?? obj.booking ?? obj.item;
+    if (nested && nested !== value) {
+      visit(nested);
+    }
+  };
+
+  visit(payload);
+  return Array.from(keys);
+};
+
+const findLocalBookingByLookupKeys = async (keys: string[]) => {
+  for (const key of keys) {
+    const booking = await prisma.booking.findFirst({
+      where: {
+        OR: [{ id: key }, { bookingCode: key }],
+      },
+      include: {
+        payment: true,
+      },
+    });
+
+    if (booking) return booking;
+  }
+
+  return null;
+};
+
+const toCreatedBookingResponse = (booking: {
+  id: string;
+  bookingCode: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  status: BookingStatus;
+  totalAmount: Prisma.Decimal;
+  payment?: { status: PaymentStatus } | null;
+}) => ({
+  id: booking.id,
+  booking_id: booking.id,
+  reference_code: booking.bookingCode,
+  check_in_date: toDateOnly(booking.checkIn),
+  check_out_date: toDateOnly(booking.checkOut),
+  num_guests: booking.guestCount,
+  total_guests: booking.guestCount,
+  status: toClientBookingStatus(booking.status, booking.payment?.status),
+  total_amount: Number(booking.totalAmount),
+});
+
+const shouldFallbackToLocalCreate = (status: number) => {
+  return status >= 500 || status === 401 || status === 403 || status === 404;
+};
+
 bookingsRouter.get('/', async (req, res, next) => {
   try {
-    try {
-      const upstream = await fetchExternalBookingsAndSync(
-        req,
-        typeof req.query.listingId === 'string' ? req.query.listingId : undefined
-      );
-      res.status(upstream.status);
-      res.setHeader('Content-Type', upstream.contentType);
-      res.send(upstream.bodyText);
-      return;
-    } catch {
-      // fallback to local when external is unreachable
-    }
+    await syncBookingsForRequest(
+      req,
+      typeof req.query.listingId === 'string' ? req.query.listingId : undefined
+    );
 
     const query = listBookingsQuerySchema.parse(req.query);
     const bookings = await prisma.booking.findMany({
@@ -585,10 +683,56 @@ bookingsRouter.post('/', async (req, res, next) => {
   try {
     try {
       const upstream = await createExternalBookingAndSync(req);
-      res.status(upstream.status);
-      res.setHeader('Content-Type', upstream.contentType);
-      res.send(upstream.bodyText);
-      return;
+      if (!shouldFallbackToLocalCreate(upstream.status)) {
+        let upstreamPayload: unknown = null;
+        try {
+          upstreamPayload = upstream.bodyText ? (JSON.parse(upstream.bodyText) as unknown) : null;
+        } catch {
+          upstreamPayload = null;
+        }
+
+        let synced = await findLocalBookingByLookupKeys(extractBookingLookupKeys(upstreamPayload));
+
+        // Some upstream create responses can be eventually consistent. Force one list sync pass
+        // by listing ID before returning upstream payload so local DB is as current as possible.
+        if (!synced) {
+          const listingId =
+            typeof (req.body as { listing_id?: unknown })?.listing_id === 'string'
+              ? String((req.body as { listing_id?: string }).listing_id).trim()
+              : '';
+
+          if (listingId) {
+            try {
+              await fetchExternalBookingsAndSync(
+                {
+                  method: 'GET',
+                  originalUrl: `/api/bookings?listingId=${encodeURIComponent(listingId)}`,
+                  headers: req.headers as Record<string, unknown>,
+                },
+                listingId
+              );
+              synced = await findLocalBookingByLookupKeys(extractBookingLookupKeys(upstreamPayload));
+            } catch {
+              // Non-fatal: return upstream payload if follow-up sync fails.
+            }
+          }
+        }
+
+        if (synced) {
+          return res.status(upstream.status === 201 ? 201 : 200).json(toCreatedBookingResponse(synced));
+        }
+
+        res.status(upstream.status);
+        res.setHeader('Content-Type', upstream.contentType);
+        res.send(upstream.bodyText);
+        return;
+      }
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(
+          `[bookings create] upstream status=${upstream.status}; falling back to local create.`
+        );
+      }
     } catch {
       // fallback to local when external is unreachable
     }
@@ -632,6 +776,7 @@ bookingsRouter.post('/', async (req, res, next) => {
     const nightlyRate = Number(unit.nightlyRate ?? 0);
     const computedTotal = nightlyRate * nights;
     const totalAmount = payload.total_amount ?? computedTotal;
+    const totalGuests = Math.max(1, Number(payload.total_guests ?? payload.num_guests ?? 1));
 
     const agent = payload.assigned_agent_email
       ? await prisma.agent.upsert({
@@ -654,7 +799,7 @@ bookingsRouter.post('/', async (req, res, next) => {
         channel: 'direct',
         status: 'pending',
         guestName: [payload.client?.first_name, payload.client?.last_name].filter(Boolean).join(' ').trim() || null,
-        guestCount: payload.num_guests,
+        guestCount: totalGuests,
         checkIn,
         checkOut,
         basePrice: computedTotal,
@@ -665,7 +810,7 @@ bookingsRouter.post('/', async (req, res, next) => {
     });
 
     // Auto-attach configured charge types (addons) to this booking.
-    const extraGuests = Math.max(0, Number(payload.extra_guests ?? 0));
+    const extraGuests = Math.max(0, Number(payload.extra_guests ?? Math.max(0, totalGuests - 1)));
     await upsertAutoChargesForBooking(booking.id, nights, extraGuests);
 
     if (payload.client?.first_name || payload.client?.last_name || payload.client?.email) {
@@ -721,16 +866,12 @@ bookingsRouter.post('/', async (req, res, next) => {
       },
     });
 
-    res.status(201).json({
-      id: booking.id,
-      booking_id: booking.id,
-      reference_code: booking.bookingCode,
-      check_in_date: toDateOnly(booking.checkIn),
-      check_out_date: toDateOnly(booking.checkOut),
-      num_guests: booking.guestCount,
-      status: toClientBookingStatus(booking.status, payment.status),
-      total_amount: Number(booking.totalAmount),
-    });
+    res.status(201).json(
+      toCreatedBookingResponse({
+        ...booking,
+        payment: payment ? { status: payment.status } : null,
+      })
+    );
   } catch (error) {
     next(error);
   }
@@ -738,6 +879,8 @@ bookingsRouter.post('/', async (req, res, next) => {
 
 bookingsRouter.get('/my', optionalAuth, async (req, res, next) => {
   try {
+    await syncBookingsForRequest(req);
+
     // Always return local DB bookings so admin and finance get consistent data (unit, dates, guest, base price, add-ons).
     // optionalAuth: no 401/403 — return all bookings when unauthenticated, filter by agent when authenticated as agent.
     const auth = req.auth ?? { roles: [], userId: undefined, email: undefined };
@@ -952,15 +1095,7 @@ bookingsRouter.post('/:id/charges/bulk', async (req, res, next) => {
 
 bookingsRouter.get('/:id', async (req, res, next) => {
   try {
-    try {
-      const upstream = await fetchExternalBookingsAndSync(req);
-      res.status(upstream.status);
-      res.setHeader('Content-Type', upstream.contentType);
-      res.send(upstream.bodyText);
-      return;
-    } catch {
-      // fallback to local when external is unreachable
-    }
+    await syncBookingsForRequest(req);
 
     const id = req.params.id;
     const booking = await prisma.booking.findFirst({

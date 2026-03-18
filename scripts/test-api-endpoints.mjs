@@ -2,10 +2,22 @@
 /**
  * Smoke test for market-backend API endpoints.
  * Usage: node scripts/test-api-endpoints.mjs [baseUrl]
- * Default baseUrl: http://localhost:4000
+ * Auto-detects healthy base URL when not provided.
  */
 
-const BASE = process.argv[2] || 'http://localhost:4000';
+const cliBase = process.argv[2]?.trim();
+const envBase = process.env.MARKET_BACKEND_BASE_URL?.trim() || process.env.BACKEND_BASE_URL?.trim();
+const envPort = process.env.APP_PORT?.trim();
+
+const candidates = [
+  cliBase,
+  envBase,
+  envPort ? `http://localhost:${envPort}` : undefined,
+  'http://localhost:4000',
+  'http://localhost:4010',
+].filter(Boolean);
+
+const uniqueCandidates = [...new Set(candidates)];
 
 const log = (msg) => console.log(msg);
 const ok = (label, res) => {
@@ -15,7 +27,61 @@ const ok = (label, res) => {
   return ok;
 };
 
+async function probeBase(baseUrl) {
+  try {
+    const health = await fetch(`${baseUrl}/health`);
+    if (!health.ok) {
+      return {
+        baseUrl,
+        healthy: false,
+        reason: `health=${health.status}`,
+      };
+    }
+
+    // Degraded upstream passthrough often appears as 5xx/530 on these routes.
+    const [units, bookings] = await Promise.all([
+      fetch(`${baseUrl}/api/units`),
+      fetch(`${baseUrl}/api/bookings`),
+    ]);
+
+    const degraded = units.status >= 500 || bookings.status >= 500;
+    return {
+      baseUrl,
+      healthy: !degraded,
+      reason: degraded
+        ? `degraded units=${units.status} bookings=${bookings.status}`
+        : `ok units=${units.status} bookings=${bookings.status}`,
+    };
+  } catch (error) {
+    return {
+      baseUrl,
+      healthy: false,
+      reason: `unreachable (${error.message})`,
+    };
+  }
+}
+
+async function resolveBaseUrl() {
+  if (uniqueCandidates.length === 0) {
+    return 'http://localhost:4000';
+  }
+
+  for (const candidate of uniqueCandidates) {
+    const probe = await probeBase(candidate);
+    if (probe.healthy) {
+      log(`Using API base: ${probe.baseUrl} (${probe.reason})`);
+      return probe.baseUrl;
+    }
+    log(`Skipping API base: ${probe.baseUrl} (${probe.reason})`);
+  }
+
+  const fallback = uniqueCandidates[0];
+  log(`No healthy base detected; falling back to ${fallback}`);
+  return fallback;
+}
+
 async function run() {
+  const BASE = await resolveBaseUrl();
   const results = { pass: 0, fail: 0 };
   const assert = (label, ok) => {
     if (ok) results.pass++;
@@ -78,6 +144,12 @@ async function run() {
     const grRouteOk = res.status === 404 || res.status === 400 || res.status === 200;
     log(`${grRouteOk ? '✓' : '✗'} GET /api/goods-receipts/attachments/:id/content → ${res.status}`);
     assert('GET /api/goods-receipts/attachments/:id/content', grRouteOk);
+
+    // Goods receipts: attachments list (404 for invalid receipt id = route exists)
+    res = await fetch(`${BASE}/api/goods-receipts/fake-receipt-id/attachments`);
+    const grListOk = res.status === 404 || res.status === 400 || res.status === 200;
+    log(`${grListOk ? '✓' : '✗'} GET /api/goods-receipts/:id/attachments → ${res.status}`);
+    assert('GET /api/goods-receipts/:id/attachments', grListOk);
 
     // POST endpoints (expect 400 without body or 201)
     res = await fetch(`${BASE}/api/product-categories`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
