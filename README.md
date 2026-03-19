@@ -36,6 +36,8 @@ npm run dev
 
 Server runs on `http://localhost:4000`.
 
+⚠️ **Note**: On startup, the backend automatically syncs bookings from the auth-service into the database. See [BOOKING_SYNC.md](docs/BOOKING_SYNC.md) for details.
+
 Health checks:
 
 - `GET /health` (service alive)
@@ -68,6 +70,22 @@ Notes:
 - Upload files are persisted in Docker volume `uploads_data`.
 - This is stable while your machine is on. For true always-on hosting, run this Docker stack on a cloud VM/server.
 - If port 4000 is already in use on your machine, set `APP_PORT=4010` in `.env`, then access `http://localhost:4010`.
+
+## 3.2) Manual Database Sync
+
+To refresh the database with the latest booking data from the auth-service:
+
+**Via script:**
+```bash
+node scripts/sync-bookings.mjs
+```
+
+**Via HTTP:**
+```bash
+curl -X POST http://localhost:4000/api/bookings/sync
+```
+
+For detailed documentation, see [BOOKING_SYNC.md](docs/BOOKING_SYNC.md).
 
 ## 4) Endpoints
 

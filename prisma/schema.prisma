@@ -298,6 +298,7 @@ model Unit {
   allocations   InventoryAllocation[]
   incidents     DamageIncident[]
   dateBlocks    UnitDateBlock[]
+  chargeTypeDateOverrides UnitChargeTypeDateOverride[]
 
   @@unique([propertyId, code])
 }
@@ -353,8 +354,30 @@ model ChargeType {
   updatedAt     DateTime          @updatedAt
 
   bookingCharges BookingCharge[]
+  dateOverrides  UnitChargeTypeDateOverride[]
 
   @@index([isActive, code])
+}
+
+/**
+ * Per-unit, per-date override for a ChargeType amount.
+ * Used for holiday/special-date pricing where amount varies per night.
+ */
+model UnitChargeTypeDateOverride {
+  id           String    @id @default(cuid())
+  unitId       String
+  chargeTypeId String
+  date         DateTime  @db.Date
+  amount       Decimal   @db.Decimal(12, 2)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  unit         Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  chargeType   ChargeType @relation(fields: [chargeTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([unitId, chargeTypeId, date])
+  @@index([unitId, date])
+  @@index([chargeTypeId, date])
 }
 
 model BookingCharge {

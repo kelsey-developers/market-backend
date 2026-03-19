@@ -65,11 +65,56 @@ const nightsBetween = (checkIn: Date, checkOut: Date) => {
   return Math.max(1, nights);
 };
 
-const upsertAutoChargesForBooking = async (bookingId: string, nights: number, extraGuests: number) => {
+const toDateOnlyStr = (value: Date) => {
+  const year = value.getUTCFullYear();
+  const month = String(value.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(value.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const upsertAutoChargesForBooking = async (
+  bookingId: string,
+  unitId: string,
+  checkIn: Date,
+  checkOut: Date,
+  nights: number,
+  extraGuests: number
+) => {
   const chargeTypes = await prisma.chargeType.findMany({
     where: { isActive: true },
     orderBy: { code: 'asc' },
   });
+
+  const chargeTypeIds = chargeTypes.map((c) => c.id);
+  const start = new Date(checkIn);
+  const end = new Date(checkOut);
+  // Dates that count as nights: check-in date inclusive, check-out date exclusive.
+  const stayDates: Date[] = [];
+  for (const cursor = new Date(start); cursor < end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    stayDates.push(new Date(cursor));
+  }
+
+  // Load per-unit per-date overrides for this booking range.
+  const overrides =
+    unitId && chargeTypeIds.length > 0 && stayDates.length > 0
+      ? await prisma.unitChargeTypeDateOverride.findMany({
+          where: {
+            unitId,
+            chargeTypeId: { in: chargeTypeIds },
+            date: {
+              gte: new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())),
+              lt: new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate())),
+            },
+          },
+          select: { chargeTypeId: true, date: true, amount: true },
+        })
+      : [];
+
+  const overrideMap = new Map<string, number>();
+  for (const ov of overrides) {
+    const key = `${ov.chargeTypeId}:${toDateOnlyStr(ov.date)}`;
+    overrideMap.set(key, Number(ov.amount));
+  }
 
   const createCharges: Array<{ chargeTypeId: string; category: 'addon'; name: string; amount: number; quantity: number; notes?: string }> = [];
 
@@ -77,10 +122,46 @@ const upsertAutoChargesForBooking = async (bookingId: string, nights: number, ex
     const defaultAmount = ct.defaultAmount ? Number(ct.defaultAmount) : 0;
     if (!Number.isFinite(defaultAmount) || defaultAmount <= 0) continue;
 
+    // Per-night pricing: allow date overrides (e.g. holidays) per unit.
+    if (ct.pricingModel === 'PER_NIGHT') {
+      for (const d of stayDates) {
+        const dateKey = toDateOnlyStr(d);
+        const amount = overrideMap.get(`${ct.id}:${dateKey}`) ?? defaultAmount;
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        createCharges.push({
+          chargeTypeId: ct.id,
+          category: 'addon',
+          name: ct.name,
+          amount,
+          quantity: 1,
+          notes: `AUTO:${ct.code}:${dateKey}`,
+        });
+      }
+      continue;
+    }
+
+    // Per-person-per-night pricing: also allow date overrides; quantity is extra guests for that night.
+    if (ct.pricingModel === 'PER_PERSON_PER_NIGHT') {
+      const qty = Math.max(0, extraGuests);
+      if (qty <= 0) continue;
+      for (const d of stayDates) {
+        const dateKey = toDateOnlyStr(d);
+        const amount = overrideMap.get(`${ct.id}:${dateKey}`) ?? defaultAmount;
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        createCharges.push({
+          chargeTypeId: ct.id,
+          category: 'addon',
+          name: ct.name,
+          amount,
+          quantity: qty,
+          notes: `AUTO:${ct.code}:${dateKey}`,
+        });
+      }
+      continue;
+    }
+
     let quantity = 1;
-    if (ct.pricingModel === 'PER_NIGHT') quantity = nights;
     if (ct.pricingModel === 'PER_PERSON') quantity = Math.max(0, extraGuests);
-    if (ct.pricingModel === 'PER_PERSON_PER_NIGHT') quantity = Math.max(0, extraGuests) * nights;
     if (ct.pricingModel === 'MANUAL') quantity = 0;
 
     if (quantity <= 0) continue;
@@ -129,6 +210,15 @@ const toClientBookingStatus = (status: BookingStatus, paymentStatus?: PaymentSta
 
 const toAvailabilityStatus = (status: BookingStatus) => {
   if (status === 'pending' || status === 'confirmed') return 'penciled';
+  if (status === 'checked_in') return 'ongoing';
+  if (status === 'checked_out') return 'completed';
+  if (status === 'cancelled') return 'cancelled';
+  return 'penciled';
+};
+
+const toRawClientStatus = (status: BookingStatus) => {
+  if (status === 'pending') return 'penciled';
+  if (status === 'confirmed') return 'confirmed';
   if (status === 'checked_in') return 'ongoing';
   if (status === 'checked_out') return 'completed';
   if (status === 'cancelled') return 'cancelled';
@@ -210,9 +300,13 @@ const toExternalBookingRecords = (payload: unknown): ExternalBookingLike[] => {
       data?: unknown;
       booking?: unknown;
       item?: unknown;
+      results?: unknown;
+      items?: unknown;
     };
     if (Array.isArray(boxed.bookings)) return boxed.bookings as ExternalBookingLike[];
     if (Array.isArray(boxed.data)) return boxed.data as ExternalBookingLike[];
+    if (Array.isArray(boxed.results)) return boxed.results as ExternalBookingLike[];
+    if (Array.isArray(boxed.items)) return boxed.items as ExternalBookingLike[];
     if (boxed.data && typeof boxed.data === 'object') return [boxed.data as ExternalBookingLike];
     if (boxed.booking && typeof boxed.booking === 'object') return [boxed.booking as ExternalBookingLike];
     if (boxed.item && typeof boxed.item === 'object') return [boxed.item as ExternalBookingLike];
@@ -243,10 +337,31 @@ const toExternalBookingId = (raw: ExternalBookingLike): string => {
 const ensureLocalUnitForBooking = async (
   tx: Prisma.TransactionClient,
   unitId: string,
-  unitTitle?: string
+  unitTitle?: string,
+  nightlyRate?: number | null
 ) => {
-  const existing = await tx.unit.findUnique({ where: { id: unitId }, select: { id: true } });
-  if (existing) return;
+  const existing = await tx.unit.findUnique({
+    where: { id: unitId },
+    select: { id: true, nightlyRate: true },
+  });
+  const safeNightlyRate =
+    nightlyRate != null && Number.isFinite(Number(nightlyRate)) ? Number(nightlyRate) : undefined;
+
+  if (existing) {
+    // Only fill in missing/zero rates to avoid overwriting manual values unless the unit was never priced.
+    if (safeNightlyRate != null && safeNightlyRate > 0) {
+      const current = existing.nightlyRate == null ? 0 : Number(existing.nightlyRate);
+      if (!Number.isFinite(current) || current <= 0) {
+        await tx.unit.update({
+          where: { id: unitId },
+          data: {
+            nightlyRate: new Prisma.Decimal(safeNightlyRate),
+          },
+        });
+      }
+    }
+    return;
+  }
 
   let property = await tx.property.findFirst({
     where: { name: EXTERNAL_SYNC_PROPERTY_NAME },
@@ -273,7 +388,8 @@ const ensureLocalUnitForBooking = async (
       code: `ext-${codeSuffix}`,
       name: unitTitle?.trim() || `External Unit ${unitId.slice(0, 8)}`,
       capacity: 1,
-      nightlyRate: new Prisma.Decimal(0),
+      nightlyRate:
+        safeNightlyRate != null && safeNightlyRate > 0 ? new Prisma.Decimal(safeNightlyRate) : new Prisma.Decimal(0),
       isActive: true,
     },
   });
@@ -303,8 +419,6 @@ const syncExternalBookingsToLocal = async (payload: unknown, fallbackListingId?:
         continue;
       }
 
-      await ensureLocalUnitForBooking(tx, listingId, raw.listing?.title);
-
       const now = new Date();
       const checkIn = parseExternalDateSafe(raw.check_in_date, now);
       let checkOut = parseExternalDateSafe(raw.check_out_date, new Date(checkIn));
@@ -313,8 +427,17 @@ const syncExternalBookingsToLocal = async (payload: unknown, fallbackListingId?:
         checkOut.setUTCDate(checkOut.getUTCDate() + 1);
       }
 
+      const nights = nightsBetween(checkIn, checkOut);
       const totalAmount = Number(raw.total_amount ?? 0);
-      const basePrice = Number(raw.unit_charge ?? totalAmount);
+      const rawUnitCharge = raw.unit_charge != null ? Number(raw.unit_charge) : NaN;
+
+      // External `unit_charge` represents nightly rate; fall back to (total / nights) when missing.
+      let nightlyRate = Number.isFinite(rawUnitCharge) && rawUnitCharge > 0 ? rawUnitCharge : totalAmount / Math.max(1, nights);
+      if (!Number.isFinite(nightlyRate) || nightlyRate < 0) nightlyRate = 0;
+
+      const basePrice = nightlyRate > 0 ? nightlyRate * nights : totalAmount;
+
+      await ensureLocalUnitForBooking(tx, listingId, raw.listing?.title, nightlyRate);
       const referenceCode = String(raw.reference_code ?? raw.booking_code ?? `EXT-${id}`);
       const guestFirst = raw.client?.first_name?.trim() || '';
       const guestLast = raw.client?.last_name?.trim() || '';
@@ -454,10 +577,12 @@ const fetchExternalBookingsAndSync = async (
       const result = await syncExternalBookingsToLocal(parsed, fallbackListingId);
 
       // Backfill missing client/guest details by calling booking detail endpoint per ID.
-      const recordsNeedingClient = initialRecords.filter((raw) => !recordHasClient(raw) && raw.id != null);
+      const recordsNeedingClient = initialRecords
+        .map((raw) => ({ raw, id: toExternalBookingId(raw) }))
+        .filter((x) => !recordHasClient(x.raw) && x.id);
       let detailGuestsUpserted = 0;
-      for (const raw of recordsNeedingClient) {
-        const id = String(raw.id ?? '').trim();
+      for (const item of recordsNeedingClient) {
+        const id = String(item.id ?? '').trim();
         if (!id) continue;
 
         try {
@@ -578,8 +703,27 @@ const syncBookingsForRequest = async (
   },
   fallbackListingId?: string
 ) => {
+  const normalizeSyncUrl = (originalUrl: string) => {
+    try {
+      const url = new URL(originalUrl, 'http://local');
+      if (url.pathname === '/api/bookings/my') {
+        if (!url.searchParams.has('limit')) url.searchParams.set('limit', '200');
+        if (!url.searchParams.has('page')) url.searchParams.set('page', '1');
+      }
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return originalUrl;
+    }
+  };
+
   try {
-    await fetchExternalBookingsAndSync(req, fallbackListingId);
+    await fetchExternalBookingsAndSync(
+      {
+        ...req,
+        originalUrl: normalizeSyncUrl(req.originalUrl),
+      },
+      fallbackListingId
+    );
   } catch {
     // Keep local DB reads resilient when upstream sync is unavailable.
   }
@@ -811,7 +955,7 @@ bookingsRouter.post('/', async (req, res, next) => {
 
     // Auto-attach configured charge types (addons) to this booking.
     const extraGuests = Math.max(0, Number(payload.extra_guests ?? Math.max(0, totalGuests - 1)));
-    await upsertAutoChargesForBooking(booking.id, nights, extraGuests);
+    await upsertAutoChargesForBooking(booking.id, booking.unitId, checkIn, checkOut, nights, extraGuests);
 
     if (payload.client?.first_name || payload.client?.last_name || payload.client?.email) {
       const guest = await prisma.guest.create({
@@ -937,6 +1081,7 @@ bookingsRouter.get('/my', optionalAuth, async (req, res, next) => {
         return {
           id: booking.id,
           reference_code: booking.bookingCode,
+          raw_status: toRawClientStatus(booking.status),
           check_in_date: toDateOnly(booking.checkIn),
           check_out_date: toDateOnly(booking.checkOut),
           status: toClientBookingStatus(booking.status, booking.payment?.status),
@@ -1093,12 +1238,145 @@ bookingsRouter.post('/:id/charges/bulk', async (req, res, next) => {
   }
 });
 
+type ListingSyncStatus = {
+  listingId: string;
+  status: number;
+};
+
+const getLocalListingIdsForFallbackSync = async (): Promise<string[]> => {
+  const units = await prisma.unit.findMany({
+    select: { id: true },
+    orderBy: { id: 'asc' },
+  });
+
+  return Array.from(
+    new Set(
+      units
+        .map((u) => String(u.id ?? '').trim())
+        .filter(Boolean)
+    )
+  );
+};
+
+const syncBookingsUsingListingFallback = async (
+  headers: Record<string, unknown>,
+  listingIds: string[]
+): Promise<ListingSyncStatus[]> => {
+  const statuses: ListingSyncStatus[] = [];
+
+  for (const listingId of listingIds) {
+    const upstream = await fetchExternalBookingsAndSync(
+      {
+        method: 'GET',
+        originalUrl: `/api/bookings?listingId=${encodeURIComponent(listingId)}`,
+        headers,
+      },
+      listingId
+    );
+
+    statuses.push({ listingId, status: upstream.status });
+  }
+
+  return statuses;
+};
+
+const syncAllBookingsToLocal = async (headers: Record<string, unknown>) => {
+  const beforeBookings = await prisma.booking.count();
+
+  const primarySync = await fetchExternalBookingsAndSync(
+    {
+      method: 'GET',
+      originalUrl: '/api/bookings/my?limit=500&page=1',
+      headers,
+    },
+    undefined
+  );
+
+  const afterPrimaryBookings = await prisma.booking.count();
+  const primaryUnauthorized = primarySync.status === 401 || primarySync.status === 403;
+  const primaryDidNotChangeData = afterPrimaryBookings <= beforeBookings;
+
+  let fallbackUsed = false;
+  let fallbackListingStatuses: ListingSyncStatus[] = [];
+
+  if (primaryUnauthorized || primaryDidNotChangeData) {
+    const listingIds = await getLocalListingIdsForFallbackSync();
+    if (listingIds.length > 0) {
+      fallbackUsed = true;
+      fallbackListingStatuses = await syncBookingsUsingListingFallback(headers, listingIds);
+    }
+  }
+
+  const totalBookings = await prisma.booking.count();
+  const totalGuests = await prisma.bookingGuest.count();
+
+  return {
+    primaryStatus: primarySync.status,
+    primaryUnauthorized,
+    fallbackUsed,
+    fallbackAttemptedListingCount: fallbackListingStatuses.length,
+    fallbackListingStatuses,
+    totalBookings,
+    totalGuests,
+  };
+};
+
+/**
+ * POST /api/bookings/sync — Manual database refresh/sync
+ * Forces a full sync of all bookings from the external auth-service API.
+ * Falls back to per-listing sync when /bookings/my is unauthorized.
+ */
+bookingsRouter.post('/sync', async (req, res, next) => {
+  try {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[manual-sync] Starting full booking database sync...');
+    }
+
+    const startTime = Date.now();
+    const syncResult = await syncAllBookingsToLocal(req.headers as Record<string, unknown>);
+    const elapsedMs = Date.now() - startTime;
+
+    const hasData = syncResult.totalBookings > 0;
+    const statusCode = hasData ? 200 : 502;
+
+    res.status(statusCode).json({
+      status: hasData ? 'synced' : 'sync_failed',
+      message: hasData
+        ? 'Database has been refreshed with latest booking data from auth-service'
+        : 'Sync completed but no bookings were written to local database. Check auth-service access.',
+      elapsed_ms: elapsedMs,
+      sync_details: {
+        primary_sync_status: syncResult.primaryStatus,
+        primary_sync_unauthorized: syncResult.primaryUnauthorized,
+        fallback_used: syncResult.fallbackUsed,
+        fallback_attempted_listing_count: syncResult.fallbackAttemptedListingCount,
+        fallback_listing_statuses: syncResult.fallbackListingStatuses,
+      },
+      database_state: {
+        total_bookings: syncResult.totalBookings,
+        total_booking_guests: syncResult.totalGuests,
+      },
+    });
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(
+        `[manual-sync] Completed in ${elapsedMs}ms. primary=${syncResult.primaryStatus} fallback=${syncResult.fallbackUsed} bookings=${syncResult.totalBookings} guests=${syncResult.totalGuests}`
+      );
+    }
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[manual-sync] Error during sync:', error);
+    }
+    next(error);
+  }
+});
+
 bookingsRouter.get('/:id', async (req, res, next) => {
   try {
     await syncBookingsForRequest(req);
 
     const id = req.params.id;
-    const booking = await prisma.booking.findFirst({
+    let booking = await prisma.booking.findFirst({
       where: {
         OR: [{ id }, { bookingCode: id }],
       },
@@ -1120,12 +1398,48 @@ bookingsRouter.get('/:id', async (req, res, next) => {
     });
 
     if (!booking) {
+      try {
+        await fetchExternalBookingsAndSync(
+          {
+            method: 'GET',
+            originalUrl: '/api/bookings/my?limit=200&page=1',
+            headers: req.headers as Record<string, unknown>,
+          },
+          undefined
+        );
+
+        booking = await prisma.booking.findFirst({
+          where: {
+            OR: [{ id }, { bookingCode: id }],
+          },
+          include: {
+            unit: {
+              include: {
+                property: true,
+              },
+            },
+            agent: true,
+            guests: {
+              include: {
+                guest: true,
+              },
+              orderBy: { createdAt: 'asc' },
+            },
+            payment: true,
+          },
+        });
+      } catch {
+        // Ignore follow-up sync failures and return standard 404 below if still missing.
+      }
+    }
+
+    if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
     }
 
     const nightlyRate = Number(booking.unit.nightlyRate ?? 0);
     const nights = nightsBetween(booking.checkIn, booking.checkOut);
-  const primaryGuest = booking.guests[0]?.guest;
+    const primaryGuest = booking.guests[0]?.guest;
     const location = booking.unit.property.location ?? booking.unit.property.address ?? '';
 
     res.json({
@@ -1136,8 +1450,10 @@ bookingsRouter.get('/:id', async (req, res, next) => {
       check_out_date: toDateOnly(booking.checkOut),
       nights,
       num_guests: booking.guestCount,
+      total_guests: booking.guestCount,
       extra_guests: 0,
       extra_guest_charge: 0,
+      excess_pax_charge: 0,
       unit_charge: nightlyRate,
       amenities_charge: 0,
       service_charge: 0,
@@ -1175,10 +1491,43 @@ bookingsRouter.get('/:id', async (req, res, next) => {
             payment_method: booking.payment.method,
             reference_number: booking.payment.referenceNo,
             payment_status: booking.payment.status,
+            deposit_amount: Number(booking.payment.totalPaid),
           }
         : undefined,
     });
   } catch (error) {
     next(error);
   }
-});
+  });
+
+/**
+ * initializeBookingSync — Can be called at startup to pre-populate database
+ * @internal Used for server startup initialization
+ */
+export const initializeBookingSync = async () => {
+  try {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[startup-sync] Pre-populating database with booking data from auth-service...');
+    }
+
+    const syncResult = await syncAllBookingsToLocal({});
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(
+        `[startup-sync] Completed. primary=${syncResult.primaryStatus} fallback=${syncResult.fallbackUsed} bookings=${syncResult.totalBookings} guests=${syncResult.totalGuests}`
+      );
+    }
+
+    return {
+      success: true,
+      totalBookings: syncResult.totalBookings,
+      totalGuests: syncResult.totalGuests,
+    };
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[startup-sync] Warning: Initial sync failed (will sync on first request):', error);
+    }
+    return { success: false, error: String(error), totalBookings: 0, totalGuests: 0 };
+  }
+};
+

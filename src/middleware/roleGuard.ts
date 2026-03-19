@@ -14,7 +14,7 @@ const ROLE_ALLOWED_PREFIXES: Record<string, string[]> = {
     '/goods-receipts',
     '/damage-incidents',
   ],
-  finance: ['/bookings', '/damage-incidents', '/charge-types'],
+  finance: ['/bookings', '/damage-incidents', '/charge-types', '/charge-type-date-overrides'],
   housekeeping: [
     '/inventory',
     '/units',
